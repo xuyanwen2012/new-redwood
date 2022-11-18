@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstdlib>
 
 #include "../../src/Redwood.hpp"
 #include "Octree.hpp"
@@ -48,6 +49,7 @@ class BarnesExecutorManager {
         ComputeForceRecursive(tree_.GetRoot());
       }
       redwood::ExecuteBatchedKernelsAsync(tid_);
+      // exit(1);
     }
   }
 
@@ -72,7 +74,6 @@ class BarnesExecutorManager {
       if (cur->bodies.empty()) return;
 
       ++stats_.leaf_node_reduced;
-
       // std::cout << cur_query_index_ << ": Leaf" << cur->uid << std::endl;
 
       redwood::ReduceLeafNode(tid_, cur->uid, cur_query_index_);

@@ -26,6 +26,8 @@ void SetNodeTables(const void* leaf_node_table, const unsigned* leaf_node_sizes,
                    unsigned num_leaf_nodes);
 void SetNodeTables(const void* leaf_node_table, unsigned num_leaf_nodes);
 
+void SetBranchBatchShape(const unsigned num, const unsigned size);
+
 // Developer APIs
 // Redwood developers can use the following APIs to micro controll the execution
 // details. This particular function is used for GPU backend Executor Runtime.

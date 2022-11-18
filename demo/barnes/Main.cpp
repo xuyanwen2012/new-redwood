@@ -39,9 +39,10 @@ int main() {
   const auto m = 32 * 1024;
   const auto theta = 0.1f;
   const auto leaf_size = 32;
-  const auto num_batches = 1024;
-  const auto batch_size = 1024;
-  const auto num_threads = 2;
+  const auto num_threads = 1;
+
+  const auto num_batches = 256;
+  const auto batch_size = 1 * 1024;
 
   assert(m % num_threads == 0);
 
@@ -58,14 +59,15 @@ int main() {
   oct::Octree<float> tree(h_in_data.data(), n, params);
   tree.BuildTree();
 
+  std::cout << "Preparing REDwood... " << '\n';
   redwood::InitReducer(leaf_size, num_threads);
   redwood::SetNodeTables(tree.GetLeafNodeTable().Data(),
                          tree.GetLeafSizeTable().Data(),
                          tree.GetStats().num_leaf_nodes);
+  redwood::SetBranchBatchShape(num_batches, batch_size);
 
   // Partition the data accross threads
   const auto num_task_per_thread = m / num_threads;
-
   std::vector<redwood::UnifiedContainer<Point3F>> u_q_data(num_threads);
   std::vector<redwood::dev::BarnesExecutorManager<float>> managers;
   managers.reserve(num_threads);
@@ -80,7 +82,7 @@ int main() {
                           num_batches, tid);
   }
 
-  std::cout << "Started Traversal... " << n << '\n';
+  std::cout << "Started Traversal... " << '\n';
   TimeTask("Traversal", [&] {
     ParallelFor(managers.begin(), managers.end(),
                 [&](auto& manager) { manager.StartTraversal(); });

@@ -29,14 +29,7 @@ void InitReducer(const unsigned leaf_size, const unsigned num_threads) {
   results.resize(num_threads);
 }
 
-void StartQuery(const long tid, const void* query_element) {
-  auto ptr = reinterpret_cast<const Point4D*>(query_element);
-}
-
-void StartQuery(const long tid, const unsigned query_idx) {
-  // Must set 'query_data_base' before calling this function
-  StartQuery(tid, &query_data_base[tid][query_idx]);
-}
+void StartQuery(const long tid, const unsigned query_idx) {}
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
@@ -97,6 +90,8 @@ void SetNodeTables(const void* leaf_node_table,
   SetNodeTables(leaf_node_table, num_leaf_nodes);
   leaf_node_sizes = leaf_node_sizes_;
 }
+
+void SetBranchBatchShape(const unsigned num, const unsigned size) {}
 
 void ExecuteBatchedKernelsAsync(long tid) {}
 
