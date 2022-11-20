@@ -21,9 +21,10 @@ const unsigned* leaf_node_sizes;
 std::vector<const Point3F*> query_data_base;
 std::vector<std::vector<Point3F>> results;
 
-void InitReducer(const unsigned leaf_size, const unsigned num_threads) {
-  stored_leaf_size = leaf_size;
+void InitReducer(const unsigned num_threads, const unsigned leaf_size,
+                 const unsigned batch_num, const unsigned batch_size) {
   stored_num_treads = num_threads;
+  stored_leaf_size = leaf_size;
 
   query_data_base.resize(num_threads);
   results.resize(num_threads);

@@ -32,6 +32,14 @@ class BarnesExecutorManager {
     assert(my_m % num_batches == 0);
     tasks_todo_.resize(my_m);
 
+    const auto iterations = my_m_ / num_batches_;
+
+    std::cout << "Manager " << tid_ << ":\n"
+              << "\tmy_m: " << my_m_ << '\n'
+              << "\tnum_batches: " << num_batches_ << '\n'
+              << "\titerations: " << iterations << '\n'
+              << std::endl;
+
     std::iota(tasks_todo_.begin(), tasks_todo_.end(), 0u);
     std::reverse(tasks_todo_.begin(), tasks_todo_.end());
   }

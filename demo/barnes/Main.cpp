@@ -38,11 +38,20 @@ int main() {
   const auto n = 4096 * 1024;  // better to be 8^x
   const auto m = 32 * 1024;
   const auto theta = 0.1f;
-  const auto leaf_size = 32;
+  const auto leaf_size = 256;
   const auto num_threads = 1;
+  const auto num_batches = 256;  // For sycl
+  const auto batch_size = 9440;  // From, 295*32
 
-  const auto num_batches = 256;
-  const auto batch_size = 1 * 1024;
+  std::cout << "Simulation Prameters:\n"
+            << "\tn: " << n << '\n'
+            << "\tm: " << m << '\n'
+            << "\ttheta: " << theta << '\n'
+            << "\tleaf_size: " << leaf_size << '\n'
+            << "\tnum_threads: " << num_threads << '\n'
+            << "\tnum_batches: " << num_batches << '\n'
+            << "\tbatch_size: " << batch_size << '\n'
+            << std::endl;
 
   assert(m % num_threads == 0);
 
@@ -60,11 +69,10 @@ int main() {
   tree.BuildTree();
 
   std::cout << "Preparing REDwood... " << '\n';
-  redwood::InitReducer(leaf_size, num_threads);
+  redwood::InitReducer(num_threads, leaf_size, num_batches, batch_size);
   redwood::SetNodeTables(tree.GetLeafNodeTable().Data(),
                          tree.GetLeafSizeTable().Data(),
                          tree.GetStats().num_leaf_nodes);
-  redwood::SetBranchBatchShape(num_batches, batch_size);
 
   // Partition the data accross threads
   const auto num_task_per_thread = m / num_threads;

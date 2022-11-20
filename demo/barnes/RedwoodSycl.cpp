@@ -20,7 +20,7 @@ namespace redwood {
 
 // ------------------- Constants -------------------
 constexpr auto kBlockThreads = 256;
-constexpr auto kNumStreams = 2;
+constexpr auto kNumStreams = 1;
 int stored_leaf_size;
 int stored_num_threads;
 int stored_num_batches;  // num_batches == num_blocks == num_executors
@@ -74,16 +74,17 @@ struct BarnesBranchBatch {
 
   // Called when API "ReduceBranchNode()" is called
   void LoadBranchNode(const unsigned q_idx, const Point4F* com) {
-    // std::cout << "44444444444444444444" << std::endl;
+    // std::cout << "44444444444444444444: " << current_batch << ", "
+    //           << current_idx_in_batch << std::endl;
 
-    // Batch overflow, use the next one
-    if (current_idx_in_batch == stored_batch_size) {
-      u_items_in_batch[current_batch] = current_idx_in_batch;
-      ++current_batch;
+    // // Batch overflow, use the next one
+    // if (current_idx_in_batch == stored_batch_size) {
+    //   u_items_in_batch[current_batch] = current_idx_in_batch;
+    //   ++current_batch;
 
-      u_query_idx[current_batch] = q_idx;
-      current_idx_in_batch = 0;
-    }
+    //   u_query_idx[current_batch] = q_idx;
+    //   current_idx_in_batch = 0;
+    // }
 
     // std::cout << "555555555555555555555" << std::endl;
 
@@ -178,7 +179,7 @@ void InitSycl() {
   std::cout << "\t- batch = " << num_processing_elements << std::endl;
 
   int vec_size = device.get_info<sycl::info::device::native_vector_width_int>();
-  std::cout << "Vec Size = " << vec_size << std::endl;
+  std::cout << "\t- Vec Size = " << vec_size << std::endl;
 
   props = {sycl::property::buffer::use_host_ptr()};
 }
@@ -264,21 +265,28 @@ void ExecuteKernelBranch(const long tid, BarnesBranchBatch& batch) {
 BarnesBranchBatch theOnlyBatch;
 
 // -------------- REDwood APIs -------------
-void InitReducer(const unsigned leaf_size, const unsigned num_threads) {
-  stored_leaf_size = leaf_size;
+void InitReducer(const unsigned num_threads, const unsigned leaf_size,
+                 const unsigned batch_num, const unsigned batch_size) {
   stored_num_threads = num_threads;
+  stored_leaf_size = leaf_size;
+
+  stored_num_batches = batch_num;
+  stored_batch_size = batch_size;
 
   InitSycl();
+
+  // theOnlyBatch.AllocateBuffer(batch_num, batch_size);
 
   rhs.resize(num_threads);
   for (int i = 0; i < num_threads; ++i) {
     rhs[i].Init();
+    rhs[i].AllocateBuffers();
   }
 }
 
 void StartQuery(const long tid, const unsigned query_idx) {
-  theOnlyBatch.OnStartQuery(query_idx);
-  // rhs[tid].CurrentBranchBatch().OnStartQuery(query_idx);
+  // theOnlyBatch.OnStartQuery(query_idx);
+  rhs[tid].CurrentBranchBatch().OnStartQuery(query_idx);
 }
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
@@ -286,13 +294,13 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
 
 void ReduceBranchNode(const long tid, const void* node_element,
                       unsigned query_idx) {
-  // std::cout << "11111111111" << std::endl;
-  theOnlyBatch.LoadBranchNode(query_idx,
-                              static_cast<const Point4F*>(node_element));
+  // std::cout << "query_idx" << std::endl;
+  // theOnlyBatch.LoadBranchNode(query_idx,
+  //                             static_cast<const Point4F*>(node_element));
   // std::cout << "2222222222222" << std::endl;
 
-  // rhs[tid].CurrentBranchBatch().LoadBranchNode(
-  //     query_idx, static_cast<const Point4F*>(node_element));
+  rhs[tid].CurrentBranchBatch().LoadBranchNode(
+      query_idx, static_cast<const Point4F*>(node_element));
 }
 
 void GetReductionResult(const long tid, const unsigned query_idx,
@@ -318,43 +326,49 @@ void SetNodeTables(const void* leaf_node_table,
   SetNodeTables(leaf_node_table, num_leaf_nodes);
 }
 
-void SetBranchBatchShape(const unsigned num, const unsigned size) {
-  stored_num_batches = num;
-  stored_batch_size = size;
-
-  theOnlyBatch.AllocateBuffer(num, size);
-
-  // for (int i = 0; i < stored_num_threads; ++i) {
-  //   rhs[i].AllocateBuffers();
-  // }
-}
-
 void ExecuteBatchedKernelsAsync(long tid) {
-  theOnlyBatch.EndTraversal();
+  // std::cout << "11111111111" << std::endl;
 
   // ExecuteKernelBranch(tid, rhs[tid].CurrentBranchBatch());
 
-  // auto next_collecting = (rhs[tid].cur_collecting + 1) % kNumStreams;
-  // rhs[tid].streams[next_collecting].wait();
+  // for (int i = 0; i < 4; ++i) {
+  //   std::cout << i << ": " << rhs[tid].CurrentBranchBatch().u_query_idx[i]
+  //             << "\t" << rhs[tid].CurrentBranchBatch().u_items_in_batch[i]
+  //             << std::endl;
+  //   for (int j = 0; j < 3; ++j) {
+  //     std::cout
+  //         << "\t" << j << ": "
+  //         << rhs[tid].CurrentBranchBatch().u_data[i * stored_batch_size + j]
+  //         << std::endl;
+  //   }
+  // }
 
-  // rhs[tid].cur_collecting = next_collecting;
-  // rhs[tid].CurrentBranchBatch().Reset();
+  auto next_collecting = (rhs[tid].cur_collecting + 1) % kNumStreams;
+  rhs[tid].streams[next_collecting].wait();
 
-  for (int i = 0; i < 4; ++i) {
-    std::cout << i << ": " << theOnlyBatch.u_query_idx[i] << "\t"
-              << theOnlyBatch.u_items_in_batch[i] << std::endl;
-    for (int j = 0; j < 3; ++j) {
-      std::cout << "\t" << j << ": "
-                << theOnlyBatch.u_data[i * stored_batch_size + j] << std::endl;
-    }
-    std::cout << "\t..." << std::endl;
-    for (int j = stored_batch_size - 3; j < stored_batch_size; ++j) {
-      std::cout << "\t" << j << ": "
-                << theOnlyBatch.u_data[i * stored_batch_size + j] << std::endl;
-    }
-  }
+  rhs[tid].cur_collecting = next_collecting;
+  rhs[tid].CurrentBranchBatch().Reset();
 
-  exit(0);
+  // theOnlyBatch.EndTraversal();
+  // theOnlyBatch.Reset();
+
+  // for (int i = 0; i < 4; ++i) {
+  //   std::cout << i << ": " << theOnlyBatch.u_query_idx[i] << "\t"
+  //             << theOnlyBatch.u_items_in_batch[i] << std::endl;
+  //   for (int j = 0; j < 3; ++j) {
+  //     std::cout << "\t" << j << ": "
+  //               << theOnlyBatch.u_data[i * stored_batch_size + j] <<
+  //               std::endl;
+  //   }
+  //   std::cout << "\t..." << std::endl;
+  //   for (int j = stored_batch_size - 3; j < stored_batch_size; ++j) {
+  //     std::cout << "\t" << j << ": "
+  //               << theOnlyBatch.u_data[i * stored_batch_size + j] <<
+  //               std::endl;
+  //   }
+  // }
+
+  // exit(0);
 }
 
 void EndReducer() {}
