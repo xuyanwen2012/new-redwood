@@ -31,7 +31,7 @@ int main() {
   const auto n = 1 << 20;
   const auto m = 16 * 1024;
 
-  const auto leaf_size = 256;
+  const auto leaf_size = 32;
   const auto k = 32;
 
   const auto num_threads = 1;
@@ -69,8 +69,7 @@ int main() {
     std::generate(u_q_data[tid].begin(), u_q_data[tid].end(),
                   MakeRandomPoint<4, float>);
 
-    // redwood::SetQueryPoints(tid, u_q_data[tid].Data(), num_task_per_thread);
-
+    redwood::SetQueryPoints(tid, u_q_data[tid].Data(), num_task_per_thread);
     managers.emplace_back(kdt_ptr, u_q_data[tid].Data(), num_task_per_thread,
                           tid);
   }
@@ -79,7 +78,7 @@ int main() {
   TimeTask("Traversal", [&] {
     ParallelFor(managers.begin(), managers.end(),
                 [&](auto& manager) { manager.StartTraversals(); });
-    // redwood::EndReducer();
+    redwood::EndReducer();
   });
 
   for (int i = 0; i < num_threads; ++i) {
@@ -88,7 +87,7 @@ int main() {
               << "\tLe: " << stats.leaf_node_reduced << std::endl;
   }
 
-  const auto n_display = std::min(num_task_per_thread, 5);
+  const auto n_display = std::min(num_task_per_thread, 2);
   for (auto i = 0; i < n_display; ++i) {
     const auto rst = managers[0].GetCpuResult(i, k);
 

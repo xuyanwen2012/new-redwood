@@ -141,12 +141,6 @@ class KnnCpuManager {
                                     my_query_points_[query_idx]);
       my_k_sets[query_idx].AddPoint(dist);
 
-      // cpu_results[query_idx].Insert(dist);
-
-      // final_results_[query_idx] =
-      //     std::min(final_results_[query_idx],
-      //              kernel_func(query_data_.GetPoint(query_idx),
-      //                          dataset_.GetPoint(accessor_idx)));
       // **********************************
 
       const auto axis = cur->node_type.tree.axis;
