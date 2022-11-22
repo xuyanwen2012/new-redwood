@@ -102,6 +102,7 @@ class KdTree {
   _NODISCARD KdtStatistic GetStats() const { return statistic_; }
   _NODISCARD KdtParams GetParams() const { return params_; }
   _NODISCARD DataSetT& GetNodeContentTable() { return h_node_content_table_; };
+  _NODISCARD const Node* GetRoot() const { return root_; };
 
   Node* BuildRecursive(const unsigned left_idx, const unsigned right_idx,
                        const int depth) {
