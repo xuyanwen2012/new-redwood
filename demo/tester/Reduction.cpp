@@ -177,9 +177,65 @@ void ComputeTreeReduction1(sycl::queue &q,
   std::cout << "ComputeTreeReduction1 Result: " << sum << std::endl;
 }
 
-void Warpup(sycl::queue &q) {
-  constexpr int warm_up_token = -1;
+void ComputeSyclReduction(sycl::queue &q, const std::vector<Point4F> &h_in_data,
+                          const Point3F u_q_data) {
+  const size_t data_size = h_in_data.size();
+  auto functor = MyFunctor();
 
+  int work_group_size = 256;
+  int num_work_groups = data_size / work_group_size;
+
+  std::cout << "ComputeSyclReduction::num_work_groups: " << num_work_groups
+            << std::endl;
+
+  sycl::buffer<Point4F> buf(h_in_data.data(), data_size, props);
+  sycl::buffer<Point3F> accum_buf(num_work_groups);
+
+  auto sum = Point3F();
+
+  Timer timer;
+
+  TimeTask("ComputeSyclReduction", [&] {
+    auto evt = q.submit([&](auto &h) {
+      sycl::accessor buf_acc(buf, h, sycl::read_only);
+      sycl::accessor accum_acc(accum_buf, h, sycl::write_only, sycl::no_init);
+      sycl::local_accessor<Point3F, 1> scratch(work_group_size, h);
+
+      h.parallel_for(sycl::nd_range<1>(data_size, work_group_size),
+                     [=](sycl::nd_item<1> item) {
+                       size_t global_id = item.get_global_id(0);
+                       int local_id = item.get_local_id(0);
+                       int group_id = item.get_group(0);
+
+                       if (global_id < data_size)
+                         scratch[local_id] =
+                             functor(buf_acc[global_id], u_q_data);
+                       else
+                         scratch[local_id] = Point3F();
+
+                       // Do a tree reduction on items in work-group
+                       for (int i = work_group_size / 2; i > 0; i >>= 1) {
+                         item.barrier(sycl::access::fence_space::local_space);
+                         if (local_id < i)
+                           scratch[local_id] += scratch[local_id + i];
+                       }
+
+                       if (local_id == 0) accum_acc[group_id] = scratch[0];
+                     });
+    });
+
+    double t1 = timer.Elapsed();
+
+    q.wait();
+
+    sycl::host_accessor h_acc(accum_buf);
+    for (int i = 0; i < num_work_groups; ++i) sum += h_acc[i];
+  });
+
+  std::cout << "ComputeSyclReduction Result: " << sum << std::endl;
+}
+
+void Warpup(sycl::queue &q) {
   int sum = 0;
   sycl::buffer<int> sum_buf(&sum, 1, props);
 
@@ -239,6 +295,8 @@ int main() {
   ComputeParallel1(q, h_in_data, query_point);
 
   ComputeTreeReduction1(q, h_in_data, query_point);
+
+  ComputeSyclReduction(q, h_in_data, query_point);
 
   return EXIT_SUCCESS;
 }

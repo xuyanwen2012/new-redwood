@@ -1,26 +1,25 @@
+#include <sys/types.h>
+
 #include <CL/sycl.hpp>
+#include <memory>
+#include <vector>
 
 #include "../PointCloud.hpp"
 #include "Kernel.cuh"
 
-static auto exception_handler = [](sycl::exception_list eList) {
-  for (std::exception_ptr const& e : eList) {
-    try {
-      std::rethrow_exception(e);
-    } catch (std::exception const& e) {
-      // #if DEBUG
-      std::cout << "Failure" << std::endl;
-      // #endif
-      std::terminate();
-    }
-  }
-};
-
 namespace redwood {
+
+struct BatchedBuffer;
+
+template <typename T>
+using VectorAllocator = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
+
+template <typename T>
+using AlignedVector = std::vector<T, VectorAllocator<T>>;
 
 // ------------------- Constants -------------------
 constexpr auto kBlockThreads = 256;
-constexpr auto kNumStreams = 1;
+constexpr auto kNumStreams = 2;
 int stored_leaf_size;
 int stored_num_threads;
 int stored_num_batches;  // num_batches == num_blocks == num_executors
@@ -30,294 +29,231 @@ sycl::device device;
 sycl::context ctx;
 sycl::property_list props;
 
-// -------------------  Buffer -------------------
+// ------------------- Variables -------------------
 
-struct BarnesBranchBatch {
-  BarnesBranchBatch() = default;
+sycl::queue q[kNumStreams];
+int cur_collecting;
 
-  ~BarnesBranchBatch() {
-    sycl::free(u_data, ctx);
-    sycl::free(u_query_idx, ctx);
-    sycl::free(u_items_in_batch, ctx);
-  }
+// Two Batch
+std::vector<BatchedBuffer> batched_buffer;
 
-  // Each block takes a Batch, so 'num == num_blocks'
-  void AllocateBuffer(const int num, const int size) {
+// ------------------- Shared Data -------------------
+
+std::vector<Point3F> q_points;
+std::unique_ptr<sycl::buffer<Point4F>> b_node_data_buf;
+
+std::vector<Point3F> results;
+std::unique_ptr<sycl::buffer<Point3F>> b_result_buf;
+
+// -------------- Buffer related -------------
+
+struct BatchedBuffer {
+  BatchedBuffer(const sycl::queue& q, const int num, const int batch)
+      : num_batch(num), batch_size(batch) {
+    VectorAllocator<int> int_alloc(q);
+    VectorAllocator<Point3F> p3_f_alloc(q);
+    u_leaf_idx =
+        std::make_shared<AlignedVector<int>>(num_batch * batch_size, int_alloc);
+    u_query = std::make_shared<AlignedVector<Point3F>>(num_batch, p3_f_alloc);
+    items_in_batch.resize(num_batch);
     Reset();
-    // stored_num_batches = num;
-    // stored_batch_size = size;
-
-    const auto bytes = sizeof(Point4F) * num * size;
-    u_data =
-        static_cast<Point4F*>(sycl::malloc_shared(bytes, device, ctx, props));
-
-    const auto unsigned_bytes = sizeof(unsigned) * num;
-    u_query_idx = static_cast<unsigned*>(
-        sycl::malloc_shared(unsigned_bytes, device, ctx, props));
-
-    u_items_in_batch = static_cast<unsigned*>(
-        sycl::malloc_shared(unsigned_bytes, device, ctx, props));
-
-    // std::cout << " ========= " << bytes << std::endl;
   }
 
-  // Called when API "OnStartQuery()" is called
-  void OnStartQuery(const unsigned query_idx) {
+  // Unchecked, make sure to call this no more than 'num_batches' times before
+  // 'Reset()'
+  void Start(const Point3F& query) {
     if (current_batch != -1) {
-      u_items_in_batch[current_batch] = current_idx_in_batch;
+      items_in_batch[current_batch] = current_idx_in_batch;
     }
-
     ++current_batch;
-    u_query_idx[current_batch] = query_idx;
+    u_query->at(current_batch) = query;
     current_idx_in_batch = 0;
   }
 
-  // Called when API "ReduceBranchNode()" is called
-  void LoadBranchNode(const unsigned q_idx, const Point4F* com) {
-    // std::cout << "44444444444444444444: " << current_batch << ", "
-    //           << current_idx_in_batch << std::endl;
-
-    // // Batch overflow, use the next one
-    // if (current_idx_in_batch == stored_batch_size) {
-    //   u_items_in_batch[current_batch] = current_idx_in_batch;
-    //   ++current_batch;
-
-    //   u_query_idx[current_batch] = q_idx;
-    //   current_idx_in_batch = 0;
-    // }
-
-    // std::cout << "555555555555555555555" << std::endl;
-
-    u_data[current_batch * stored_batch_size + current_idx_in_batch] = *com;
+  // Unchecked, make sure to call this no more than 'leaf_size' times before
+  // next 'Start()'
+  void Push(const int leaf_id) {
+    u_leaf_idx->at(current_batch * batch_size + current_idx_in_batch) = leaf_id;
     ++current_idx_in_batch;
   }
 
-  void EndTraversal() {
-    u_items_in_batch[current_batch] = current_idx_in_batch;
-  }
-
-  _NODISCARD unsigned Size(const unsigned batch_id) const {
-    return u_items_in_batch[batch_id];
+  void End() {
+    items_in_batch[current_batch] = current_idx_in_batch;
+    ++current_batch;
   }
 
   void Reset() {
     current_batch = -1;
     current_idx_in_batch = 0;
+
+    // TODO: optimize
+    std::fill(u_query->begin(), u_query->end(), Point3F{-1.0f, 0.0f, 0.0f});
+    std::fill(u_leaf_idx->begin(), u_leaf_idx->end(), 0);
+    std::fill(items_in_batch.begin(), items_in_batch.end(), 0);
   }
 
-  // Center of masses and query points
-  unsigned* u_items_in_batch;  // n
-  Point4F* u_data;             // n * size
-  unsigned* u_query_idx;       // n
+  _NODISCARD int* GetBatchData(const int batch_id) const {
+    return &u_leaf_idx->at(batch_id * batch_size);
+  }
 
-  // Misc
+  _NODISCARD Point3F GetQuery(const int batch_id) const {
+    return u_query->at(batch_id);
+  }
+
+  _NODISCARD int NumBatchesCollected() const { return current_batch; }
+  _NODISCARD int ItemsInBatch(const int batch_id) const {
+    return items_in_batch[batch_id];
+  }
+
   int current_idx_in_batch;
   int current_batch;
+
+  int num_batch;
+  int batch_size;
+
+  std::vector<int> items_in_batch;
+  std::shared_ptr<AlignedVector<Point3F>> u_query;
+  std::shared_ptr<AlignedVector<int>> u_leaf_idx;
 };
 
-// BarnesBranchBatch theOnlyBatch;
+// -------------- SYCL related -------------
 
-struct ReducerHandler {
-  // TODO: Fix
-  void Init() {
-    streams[0] = sycl::queue(device, exception_handler);
-    for (int i = 1; i < kNumStreams; i++) {
-      streams[i] = sycl::queue(streams[0].get_context(), device);
-    }
-    cur_collecting = 0;
-  }
+void StartBatchReduction(sycl::queue& q, sycl::buffer<Point4F>& node_data_buf,
+                         sycl::buffer<int>& leaf_idx_buf,
+                         const size_t items_in_batch, const int leaf_size,
+                         const Point3F query_point) {
+  const auto data_size = items_in_batch;
+  // const auto data_size = MyRoundUp<size_t>(items_in_batch, 256);
+  // std::cout << data_size << std::endl;
+  // return;
 
-  void AllocateBuffers() {
-    for (int i = 0; i < kNumStreams; i++) {
-      br_batches[i].AllocateBuffer(stored_num_batches, stored_batch_size);
-    }
-  }
+  constexpr auto functor = MyFunctor();
 
-  void AllocateResults(const unsigned m) {
-    const auto bytes = sizeof(Point3F) * m;
-    u_results =
-        static_cast<Point3F*>(sycl::malloc_shared(bytes, device, ctx, props));
+  constexpr auto work_group_size = kBlockThreads;  // 256
 
-    std::fill_n(u_results, m, Point3F());
-  }
+  const auto num_work_items = data_size;
+  const auto num_work_groups = num_work_items / work_group_size;  // 1
 
-  sycl::buffer<Point3F>* b_query_data;
-  Point3F* u_results;
+  sycl::buffer<Point3F> accum_buf(num_work_groups);
 
-  unsigned cur_collecting;
-  sycl::queue streams[kNumStreams];
-  BarnesBranchBatch br_batches[kNumStreams];
+  q.submit([&](auto& h) {
+    sycl::accessor node_data_acc(node_data_buf, h, sycl::read_only);
+    sycl::accessor leaf_idx_acc(leaf_idx_buf, h, sycl::read_only);
+    sycl::accessor accum_acc(accum_buf, h, sycl::write_only, sycl::no_init);
+    sycl::local_accessor<Point3F, 1> scratch(work_group_size, h);
 
-  sycl::queue& CurrentStream() { return streams[cur_collecting]; }
-  BarnesBranchBatch& CurrentBranchBatch() { return br_batches[cur_collecting]; }
-};
+    h.parallel_for(sycl::nd_range<1>(num_work_items, work_group_size),
+                   [=](const sycl::nd_item<1> item) {
+                     const auto global_id = item.get_global_id(0);
+                     const auto local_id = item.get_local_id(0);
+                     const auto group_id = item.get_group(0);
 
-// num_threads
-std::vector<ReducerHandler> rhs;
+                     if (global_id < data_size) {
+                       Point3F my_sum{};
 
-// -------------------  SYCL Related -------------------
+                       const auto leaf_id = leaf_idx_acc[global_id];
+                       for (int i = 0; i < leaf_size; ++i) {
+                         my_sum +=
+                             functor(node_data_acc[leaf_id * leaf_size + i],
+                                     query_point);
+                       }
 
-class MyReduction;
+                       scratch[local_id] = my_sum;
+                     } else {
+                       scratch[local_id] = Point3F();
+                     }
 
-void InitSycl() {
-  // Intel(R) UHD Graphics [0x9b41] on Parakeet
-  device = sycl::device::get_devices(sycl::info::device_type::all)[1];
+                     // Do a tree reduction on items in work-group
+                     for (int i = work_group_size / 2; i > 0; i >>= 1) {
+                       item.barrier(sycl::access::fence_space::local_space);
+                       if (local_id < i) {
+                         scratch[local_id] += scratch[local_id + i];
+                       }
+                     }
 
-  std::cout << "SYCL Device: " << device.get_info<sycl::info::device::name>()
-            << std::endl;
-
-  int num_processing_elements =
-      device.get_info<sycl::info::device::max_compute_units>();
-  std::cout << "\t- Num work items = " << num_processing_elements << std::endl;
-
-  int max_work_group_size =
-      device.get_info<sycl::info::device::max_work_group_size>();
-  std::cout << "\t- Max work group size = " << max_work_group_size << std::endl;
-
-  int batch =
-      (4096 * 1024 + num_processing_elements - 1) / num_processing_elements;
-  std::cout << "\t- batch = " << num_processing_elements << std::endl;
-
-  int vec_size = device.get_info<sycl::info::device::native_vector_width_int>();
-  std::cout << "\t- Vec Size = " << vec_size << std::endl;
-
-  props = {sycl::property::buffer::use_host_ptr()};
-}
-
-// -------------------  Application Related -------------------
-
-// Shared Data
-sycl::buffer<Point4F>* b_node_content_table;
-
-namespace internal {
-
-void AllocateAndCopyLeafNodesData(const void* leaf_node_table,
-                                  const unsigned num_leaf_nodes) {
-  auto lnd = static_cast<const Point4F*>(leaf_node_table);
-  b_node_content_table = new sycl::buffer(
-      lnd, sycl::range{num_leaf_nodes * stored_leaf_size}, props);
-}
-
-void AllocateAndCopyQueryData(const long tid, const void* query_data,
-                              const unsigned m) {
-  auto qd = static_cast<const Point3F*>(query_data);
-  rhs[tid].b_query_data = new sycl::buffer(qd, sycl::range{m}, props);
-}
-
-}  // namespace internal
-
-static inline int RoundUpIntDiv(int x, int y) { return (x + y - 1) / y; }
-
-// For Branch
-void ExecuteKernelBranch(const long tid, BarnesBranchBatch& batch) {
-  batch.EndTraversal();
-
-  const auto num_collected = batch.current_batch;  // something like 1024
-  const auto iterations = RoundUpIntDiv(num_collected, kBlockThreads);
-
-  std::cout << num_collected << ", " << iterations << std::endl;
-
-  // Done on GPU
-  rhs[tid].CurrentStream().submit([&](sycl::handler& cgh) {
-    sycl::accessor acc_qd{*rhs[tid].b_query_data, cgh, sycl::read_only};
-
-    const auto functor = MyFunctor();
-
-    // Create Local Ref
-    const Point4F* local_u_batch_data = batch.u_data;
-    const unsigned* local_u_query_idx = batch.u_query_idx;
-    const unsigned* local_u_items_in_batch = batch.u_items_in_batch;
-    Point3F* local_u_results = rhs[tid].u_results;
-    const int local_stored_batch_size = stored_batch_size;
-
-    cgh.parallel_for<MyReduction>(
-        sycl::range{kBlockThreads}, [=](sycl::id<1> tid) {
-          for (int block = 0; block < iterations; ++block) {
-            // This is the 'n' in 'batch[n]'
-            const auto data_idx = block * kBlockThreads + tid;
-
-            auto my_dist = Point3F();
-
-            if (data_idx < num_collected) {
-              const auto query_idx = local_u_query_idx[data_idx];
-              const auto q = acc_qd[query_idx];
-              const auto num_items = local_u_items_in_batch[query_idx];
-
-              for (int i = 0; i < num_items; ++i) {
-                const auto dist = functor(
-                    local_u_batch_data[data_idx * local_stored_batch_size + i],
-                    q);
-                my_dist += dist;
-              }
-
-              local_u_results[query_idx] += my_dist;
-            }
-          }
-        });
+                     if (local_id == 0) {
+                       accum_acc[group_id] = scratch[0];
+                     }
+                   });
   });
-
-  // CurrentStream().wait();
-
-  // std::cout << "--------------" << std::endl;
-  // exit(1);
 }
 
-BarnesBranchBatch theOnlyBatch;
+void WarmUp(sycl::queue& q) {
+  int sum;
+  sycl::buffer<int> sum_buf(&sum, 1);
+  q.submit([&](auto& h) {
+    sycl::accessor sum_acc(sum_buf, h, sycl::write_only, sycl::no_init);
+    h.parallel_for(1, [=](auto) { sum_acc[0] = 0; });
+  });
+  q.wait();
+}
 
 // -------------- REDwood APIs -------------
 void InitReducer(const unsigned num_threads, const unsigned leaf_size,
                  const unsigned batch_num, const unsigned batch_size) {
+  // Save Parameters
   stored_num_threads = num_threads;
   stored_leaf_size = leaf_size;
-
   stored_num_batches = batch_num;
   stored_batch_size = batch_size;
 
-  InitSycl();
+  // Set up Sycl
+  // Intel(R) UHD Graphics [0x9b41] on Parakeet
+  device = sycl::device::get_devices(sycl::info::device_type::all)[1];
+  std::cout << "SYCL Device: " << device.get_info<sycl::info::device::name>()
+            << std::endl;
+  props = {sycl::property::buffer::use_host_ptr()};
 
-  // theOnlyBatch.AllocateBuffer(batch_num, batch_size);
+  q[0] = sycl::queue(device);
+  for (int i = 1; i < kNumStreams; i++)
+    q[i] = sycl::queue(q[0].get_context(), device);
 
-  rhs.resize(num_threads);
-  for (int i = 0; i < num_threads; ++i) {
-    rhs[i].Init();
-    rhs[i].AllocateBuffers();
-  }
+  // Setup
+  for (int i = 0; i < kNumStreams; i++)
+    batched_buffer.emplace_back(q[i], batch_num, batch_size);
+
+  for (int i = 0; i < kNumStreams; i++) WarmUp(q[0]);
+
+  cur_collecting = 0;
 }
 
 void StartQuery(const long tid, const unsigned query_idx) {
-  // theOnlyBatch.OnStartQuery(query_idx);
-  rhs[tid].CurrentBranchBatch().OnStartQuery(query_idx);
+  batched_buffer[cur_collecting].Start(q_points[query_idx]);
 }
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
-                    const unsigned query_idx) {}
+                    const unsigned query_idx) {
+  batched_buffer[cur_collecting].Push(node_idx);
+}
 
 void ReduceBranchNode(const long tid, const void* node_element,
                       unsigned query_idx) {
-  // std::cout << "query_idx" << std::endl;
-  // theOnlyBatch.LoadBranchNode(query_idx,
-  //                             static_cast<const Point4F*>(node_element));
-  // std::cout << "2222222222222" << std::endl;
-
-  rhs[tid].CurrentBranchBatch().LoadBranchNode(
-      query_idx, static_cast<const Point4F*>(node_element));
+  auto kernel_func = MyFunctor();
+  const auto p = static_cast<const Point4F*>(node_element);
+  // results[tid][query_idx] += kernel_func(*p,
+  // query_data_base[tid][query_idx]);
 }
 
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {
   // TODO: Add offset
   auto addr = static_cast<Point3F*>(result);
-  *addr = rhs[tid].u_results[query_idx];
 }
 
 void SetQueryPoints(const long tid, const void* query_points,
                     const unsigned num_query) {
-  internal::AllocateAndCopyQueryData(tid, query_points, num_query);
-  rhs[tid].AllocateResults(num_query);
+  auto ptr = static_cast<const Point3F*>(query_points);
+  q_points.assign(ptr, ptr + num_query);
+
+  // Allocate Result Buffer (no 'use_host_ptr')
+  b_result_buf =
+      std::make_unique<sycl::buffer<Point3F>>(sycl::range{num_query});
 }
 
 void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
-  internal::AllocateAndCopyLeafNodesData(leaf_node_table, num_leaf_nodes);
+  auto lnd = static_cast<const Point4F*>(leaf_node_table);
+  b_node_data_buf = std::make_unique<sycl::buffer<Point4F>>(
+      lnd, sycl::range{num_leaf_nodes * stored_leaf_size}, props);
 }
 
 void SetNodeTables(const void* leaf_node_table,
@@ -327,50 +263,34 @@ void SetNodeTables(const void* leaf_node_table,
 }
 
 void ExecuteBatchedKernelsAsync(long tid) {
-  // std::cout << "11111111111" << std::endl;
+  // Terminate the Current Batch
+  batched_buffer[cur_collecting].End();
 
-  // ExecuteKernelBranch(tid, rhs[tid].CurrentBranchBatch());
+  const auto num_collected =
+      batched_buffer[cur_collecting].NumBatchesCollected();
 
-  // for (int i = 0; i < 4; ++i) {
-  //   std::cout << i << ": " << rhs[tid].CurrentBranchBatch().u_query_idx[i]
-  //             << "\t" << rhs[tid].CurrentBranchBatch().u_items_in_batch[i]
-  //             << std::endl;
-  //   for (int j = 0; j < 3; ++j) {
-  //     std::cout
-  //         << "\t" << j << ": "
-  //         << rhs[tid].CurrentBranchBatch().u_data[i * stored_batch_size + j]
-  //         << std::endl;
-  //   }
-  // }
+  for (int batch_id = 0; batch_id < num_collected; ++batch_id) {
+    const auto items_in_batch =
+        batched_buffer[cur_collecting].ItemsInBatch(batch_id);
 
-  auto next_collecting = (rhs[tid].cur_collecting + 1) % kNumStreams;
-  rhs[tid].streams[next_collecting].wait();
+    if (items_in_batch == 0) continue;
 
-  rhs[tid].cur_collecting = next_collecting;
-  rhs[tid].CurrentBranchBatch().Reset();
+    sycl::buffer<int> leaf_idx_buf(
+        batched_buffer[cur_collecting].GetBatchData(batch_id),
+        stored_batch_size, props);
 
-  // theOnlyBatch.EndTraversal();
-  // theOnlyBatch.Reset();
+    StartBatchReduction(q[cur_collecting], *b_node_data_buf, leaf_idx_buf,
+                        stored_batch_size, stored_leaf_size,
+                        batched_buffer[cur_collecting].GetQuery(batch_id));
+  }
 
-  // for (int i = 0; i < 4; ++i) {
-  //   std::cout << i << ": " << theOnlyBatch.u_query_idx[i] << "\t"
-  //             << theOnlyBatch.u_items_in_batch[i] << std::endl;
-  //   for (int j = 0; j < 3; ++j) {
-  //     std::cout << "\t" << j << ": "
-  //               << theOnlyBatch.u_data[i * stored_batch_size + j] <<
-  //               std::endl;
-  //   }
-  //   std::cout << "\t..." << std::endl;
-  //   for (int j = stored_batch_size - 3; j < stored_batch_size; ++j) {
-  //     std::cout << "\t" << j << ": "
-  //               << theOnlyBatch.u_data[i * stored_batch_size + j] <<
-  //               std::endl;
-  //   }
-  // }
-
-  // exit(0);
+  // Switch
+  auto next_collecting = (cur_collecting + 1) % kNumStreams;
+  q[next_collecting].wait();
+  cur_collecting = next_collecting;
+  batched_buffer[cur_collecting].Reset();
 }
 
-void EndReducer() {}
+void EndReducer() { q[cur_collecting].wait(); }
 
 }  // namespace redwood

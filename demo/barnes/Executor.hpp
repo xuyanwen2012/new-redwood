@@ -56,6 +56,9 @@ class BarnesExecutorManager {
 
         ComputeForceRecursive(tree_.GetRoot());
       }
+
+      std::cout << " tasks_todo_:  " << tasks_todo_.size() << std::endl;
+
       redwood::ExecuteBatchedKernelsAsync(tid_);
       // exit(1);
     }

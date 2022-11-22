@@ -51,6 +51,17 @@ struct Point {
     }
     return *this;
   }
+
+  _REDWOOD_KERNEL Point<Dim, T>& operator++() {
+    ++data[0];
+    return *this;
+  };
+
+  // _REDWOOD_KERNEL void operator=(const Point<Dim, T>& rhs) {
+  //   for (int i = 0; i < Dim; ++i) {
+  //     data[i] = rhs.data[i];
+  //   }
+  // }
 };
 
 template <int Dim, typename T>
@@ -86,27 +97,6 @@ std::ostream& operator<<(std::ostream& os, const Point<Dim, T>& dt) {
   os << dt.data[Dim - 1] << ')';
   return os;
 }
-
-// template <int Dim, typename T>
-// struct PointCloud {
-//   using PointT = Point<Dim, T>;
-//   using ValueT = T;
-
-//   PointCloud() = default;
-
-//   explicit PointCloud(const size_t n) {
-//     dat.resize(n);
-//     std::generate(dat.begin(), dat.end(), MakeRandomPoint<Dim, T>);
-//   }
-
-//   _NODISCARD size_t GetPointsCount() const { return dat.size(); }
-//   _NODISCARD PointT GetPoint(const unsigned idx) const { return dat[idx]; }
-//   _NODISCARD T GetPoint(const unsigned idx, const int axis) const {
-//     return dat[idx].data[axis];
-//   }
-
-//   std::vector<PointT> dat;
-// };
 
 using Point3F = Point<3, float>;
 using Point4F = Point<4, float>;

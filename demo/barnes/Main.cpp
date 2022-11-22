@@ -35,13 +35,13 @@ Point3F CpuNaiveQuery(const Point4F* in_data, const Point3F* q_data,
 }
 
 int main() {
-  const auto n = 4096 * 1024;  // better to be 8^x
+  const auto n = std::pow(8, 7);  //, better to be 8^x
   const auto m = 32 * 1024;
   const auto theta = 0.1f;
   const auto leaf_size = 256;
   const auto num_threads = 1;
-  const auto num_batches = 256;  // For sycl
-  const auto batch_size = 9440;  // From, 295*32
+  const auto num_batches = 1024;  //
+  const auto batch_size = 7936;   // (Multiple of WorkGroup Size, in SYCL, 256)
 
   std::cout << "Simulation Prameters:\n"
             << "\tn: " << n << '\n'
