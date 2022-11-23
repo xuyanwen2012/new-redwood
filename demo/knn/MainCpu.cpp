@@ -31,7 +31,7 @@ int main() {
   const auto n = 1 << 20;
   const auto m = 16 * 1024;
 
-  const auto leaf_size = 256;
+  const auto leaf_size = 32;
   const auto k = 32;
 
   const auto num_threads = 1;
@@ -58,26 +58,20 @@ int main() {
   auto kdt_ptr = std::make_shared<kdt::KdTree>(params, h_in_data);
   kdt_ptr->BuildTree();
 
-  std::cout << "Preparing REDwood... " << '\n';
-  redwood::InitReducer(num_threads, leaf_size, num_batches);
-  redwood::SetNodeTables(kdt_ptr->GetNodeContentTable().data(),
-                         kdt_ptr->GetStats().num_leaf_nodes);
-
   // Partition the data accross threads
   const auto num_task_per_thread = m / num_threads;
   std::vector<redwood::UnifiedContainer<Point4F>> u_q_data(num_threads);
-  std::vector<redwood::dev::KnnExecutorManager<float>> managers;
+  std::vector<redwood::dev::KnnCpuManager<float>> managers;
   managers.reserve(num_threads);
 
   for (int tid = 0; tid < num_threads; ++tid) {
-    // Generate sub Query Points for each CPU thread
     u_q_data[tid].Allocate(num_task_per_thread);
     std::generate(u_q_data[tid].begin(), u_q_data[tid].end(),
                   MakeRandomPoint<4, float>);
 
     redwood::SetQueryPoints(tid, u_q_data[tid].Data(), num_task_per_thread);
     managers.emplace_back(kdt_ptr, u_q_data[tid].Data(), num_task_per_thread,
-                          num_batches, tid);
+                          tid);
   }
 
   std::cout << "Started Traversal... " << '\n';
@@ -86,6 +80,35 @@ int main() {
                 [&](auto& manager) { manager.StartTraversals(); });
     redwood::EndReducer();
   });
+
+  for (int i = 0; i < num_threads; ++i) {
+    const auto stats = managers[i].GetStats();
+    std::cout << "\tBr: " << stats.branch_node_reduced
+              << "\tLe: " << stats.leaf_node_reduced << std::endl;
+  }
+
+  const auto n_display = std::min(num_task_per_thread, 2);
+  for (auto i = 0; i < n_display; ++i) {
+    const auto rst = managers[0].GetCpuResult(i, k);
+
+    std::cout << "Query " << i << ":\n"
+              << "\tquery_point: \t" << u_q_data[0l][i] << '\n'
+              << "\tResults:\n";
+
+    if constexpr (constexpr auto show_ground_truth = true) {
+      auto gt = CpuNaiveQuery<32>(h_in_data.data(), u_q_data[0l][i], n);
+
+      for (int i = 0; i < k; ++i) {
+        std::cout << "\t\t" << rst[i] << "\t---\t" << gt[i] << "\n";
+      }
+
+    } else {
+      for (int i = 0; i < k; ++i) {
+        std::cout << "\t\t" << rst[i] << "\n";
+      }
+    }
+    std::cout << std::endl;
+  }
 
   return EXIT_SUCCESS;
 }
