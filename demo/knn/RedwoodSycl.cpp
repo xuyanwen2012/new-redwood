@@ -266,7 +266,7 @@ void ProcessBatchSycl(sycl::queue& q, NnBatch& batch) {
   }
 }
 
-void ExecuteBatchedKernelsAsync(long tid) {
+void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
   // At this point, buffers are filled.
   // const auto num_leaf_to_process =
   // batches[cur_collecting].next_avalible_slot; std::cout <<

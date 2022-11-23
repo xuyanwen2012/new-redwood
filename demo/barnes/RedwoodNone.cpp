@@ -44,7 +44,7 @@ void SetNodeTables(const void* leaf_node_table,
 
 void SetBranchBatchShape(const unsigned num, const unsigned size) {}
 
-void ExecuteBatchedKernelsAsync(long tid) {}
+void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {}
 
 void EndReducer() {
   for (int i = 0; i < 1024; ++i) {

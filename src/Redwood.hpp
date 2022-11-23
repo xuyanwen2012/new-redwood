@@ -30,6 +30,6 @@ void SetNodeTables(const void* leaf_node_table, unsigned num_leaf_nodes);
 // Developer APIs
 // Redwood developers can use the following APIs to micro controll the execution
 // details. This particular function is used for GPU backend Executor Runtime.
-void ExecuteBatchedKernelsAsync(long tid);
+void ExecuteBatchedKernelsAsync(long tid, int num_batch_collected);
 
 }  // namespace redwood

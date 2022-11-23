@@ -279,7 +279,7 @@ void SetNodeTables(const void* leaf_node_table,
   SetNodeTables(leaf_node_table, num_leaf_nodes);
 }
 
-void ExecuteBatchedKernelsAsync(long tid) {
+void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
   // Terminate the Current Batch
   batched_buffer[cur_collecting].End();
 
