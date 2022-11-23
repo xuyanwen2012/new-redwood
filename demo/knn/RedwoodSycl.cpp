@@ -211,7 +211,7 @@ void ProcessBatchSycl(sycl::queue& q, NnBatch& batch) {
       stored_num_batches * stored_leaf_size;  // 1024 * 256
 
   // 1k->4, 256->1, For Sycl, lets have leaf size >256
-  // const auto items_per_thread = stored_leaf_size / kBlockThreads;
+  const auto items_per_thread = stored_leaf_size / kBlockThreads;
 
   // For 'nd_range'
   const auto num_total_works = total_num_items;  /// items_per_thread;
@@ -239,6 +239,9 @@ void ProcessBatchSycl(sycl::queue& q, NnBatch& batch) {
             const auto global_id = item.get_global_id(0);
             const auto local_id = item.get_local_id(0);  // 0...255
             const auto group_id = item.get_group(0);  // 0...1024 aka batch_id
+
+            //const auto batch_id = ;
+            //const auto index_in_batch = ;
 
             const uint2 content = buffer_acc[group_id];
             const auto q_idx = content.x;
