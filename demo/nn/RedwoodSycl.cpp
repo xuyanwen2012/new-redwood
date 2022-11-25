@@ -180,7 +180,8 @@ void SetNodeTables(const void* leaf_node_table,
   SetNodeTables(leaf_node_table, num_leaf_nodes);
 }
 
-void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
+void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {\
+  // q[cur_collecting].wait();
   StartProcessBufferNaive(q[cur_collecting], nn_buffers[cur_collecting]);
   const auto next_collecting = (cur_collecting + 1) % kNumStreams;
   q[next_collecting].wait();

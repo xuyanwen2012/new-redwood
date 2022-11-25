@@ -69,7 +69,8 @@ struct NnBatch {
 
     const auto bytes = sizeof(uint2) * num;
     u_buffer =
-        static_cast<uint2*>(sycl::malloc_shared(bytes, device, ctx, props));
+        static_cast<uint2*>(sycl::malloc_host(bytes, ctx, props));
+        // static_cast<uint2*>(sycl::malloc_shared(bytes, device, ctx, props));
   };
 
   ~NnBatch() { sycl::free(u_buffer, ctx); }

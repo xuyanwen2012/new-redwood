@@ -25,10 +25,10 @@ int main() {
   const auto n = 1 << 20;
   const auto m = 64 * 1024;
 
-  const auto leaf_size = 256;
+  const auto leaf_size = 1024;
 
   const auto num_threads = 1;
-  const auto num_batches = 1024;  // each batch takes a leaf, and a single query
+  const auto num_batches = 512;  // each batch takes a leaf, and a single query
 
   std::cout << "Simulation Prameters:\n"
             << "\tn: " << n << '\n'

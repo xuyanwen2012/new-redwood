@@ -304,7 +304,7 @@ class NnExecutorManager {
         ++it;
       }
 
-      if (tasks_todo_.empty()) {
+      if (tasks_todo_.size() < 32) {
         std::cout << " Done!!!" << std::endl;
         return;  // exit(1);
       }

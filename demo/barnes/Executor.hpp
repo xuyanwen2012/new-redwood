@@ -59,7 +59,7 @@ class BarnesExecutorManager {
 
       std::cout << " tasks_todo_:  " << tasks_todo_.size() << std::endl;
 
-      redwood::ExecuteBatchedKernelsAsync(tid_);
+      redwood::ExecuteBatchedKernelsAsync(tid_, num_batches_);
       // exit(1);
     }
   }

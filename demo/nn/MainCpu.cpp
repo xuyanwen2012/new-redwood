@@ -15,7 +15,7 @@ int main() {
   const auto n = 1 << 20;
   const auto m = 64 * 1024;
 
-  const auto leaf_size = 256;
+  const auto leaf_size = 512;
 
   const auto num_threads = 1;
   const auto num_batches = 1024;  // each batch takes a leaf, and a single query

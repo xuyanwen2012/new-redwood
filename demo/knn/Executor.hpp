@@ -325,7 +325,7 @@ class KnnExecutorManager {
         std::cout << " Done!!!" << std::endl;
         return;  // exit(1);
       }
-      std::cout << " Tasks left:  " << tasks_todo_.size() << std::endl;
+      // std::cout << " Tasks left:  " << tasks_todo_.size() << std::endl;
 
       redwood::ExecuteBatchedKernelsAsync(0, executors_.size());
     }
