@@ -19,6 +19,7 @@ using ResultT = Point3F;
 // Stats
 std::vector<int> num_branch_visited;
 std::vector<int> num_leaf_visited;
+int leaf_reduced_counter = 0;
 
 // Consts
 int stored_leaf_size;
@@ -38,7 +39,7 @@ void InitReducer(const unsigned num_threads, const unsigned leaf_size,
   stored_num_batches = static_cast<int>(batch_num);
 }
 
-void StartQuery(const long tid, const unsigned query_idx) {}
+void StartQuery(long tid, const void* task_obj) {}
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
@@ -46,6 +47,7 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
 
   const auto leaf_size = host_leaf_sizes_ref[query_idx];
   for (int i = 0; i < leaf_size; ++i) {
+    ++leaf_reduced_counter;
     final_results[query_idx] +=
         functor(host_leaf_table_ref[node_idx * stored_leaf_size + i],
                 host_tasks_ref[query_idx].query_point);
@@ -98,6 +100,8 @@ void EndReducer() {
                 << "\tle: " << num_leaf_visited[i] << std::endl;
     }
   }
+
+  std::cout << "leaf_reduced_counter: " << leaf_reduced_counter << std::endl;
 
   const auto br_max =
       *std::max_element(num_branch_visited.begin(), num_branch_visited.end());

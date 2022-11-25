@@ -128,7 +128,7 @@ int main(int argc, char* argv[]) {
               << "\tquery_point: \t" << for_display[i].query_point << '\n'
               << "\tforce:    \t" << rst << '\n';
 
-    if constexpr (constexpr auto show_ground_truth = true) {
+    if constexpr (constexpr auto show_ground_truth = false) {
       std::cout << "\tground_truth: \t"
                 << CpuNaiveQuery(h_in_data.data(), for_display[i].query_point,
                                  n)
