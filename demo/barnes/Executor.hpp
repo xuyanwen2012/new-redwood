@@ -61,7 +61,10 @@ class BarnesExecutorManager {
     while (!my_tasks_.empty()) {
       const auto task = my_tasks_.back();
       my_tasks_.pop_back();
+
+      StartQuery(tid_, &task);
       ComputeForceRecursive(tree_ref_->GetRoot(), task);
+      ExecuteBatchedKernelsAsync(tid_, num_batches_);
     }
   }
 
