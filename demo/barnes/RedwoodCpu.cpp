@@ -1,5 +1,6 @@
 // This is used to Test the Theroy
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <numeric>
 #include <vector>
@@ -44,18 +45,11 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
   constexpr auto functor = MyFunctor();
 
   const auto leaf_size = host_leaf_sizes_ref[query_idx];
-
-  // std::cout << leaf_size << std::endl;
-  // std::cout << host_tasks_ref[query_idx] << std::endl;
-
   for (int i = 0; i < leaf_size; ++i) {
     final_results[query_idx] +=
         functor(host_leaf_table_ref[node_idx * stored_leaf_size + i],
                 host_tasks_ref[query_idx].query_point);
   }
-
-  const auto start = host_leaf_table_ref + node_idx * stored_leaf_size;
-  const auto end = start + leaf_size;
 
   ++num_leaf_visited[query_idx];
 }
@@ -98,10 +92,12 @@ void SetBranchBatchShape(const unsigned num, const unsigned size) {}
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {}
 
 void EndReducer() {
-  // for (int i = 0; i < 256; ++i) {
-  //   std::cout << i << ":\tbr: " << num_branch_visited[i]
-  //             << "\tle: " << num_leaf_visited[i] << std::endl;
-  // }
+  if constexpr (false) {
+    for (int i = 0; i < 256; ++i) {
+      std::cout << i << ":\tbr: " << num_branch_visited[i]
+                << "\tle: " << num_leaf_visited[i] << std::endl;
+    }
+  }
 
   const auto br_max =
       *std::max_element(num_branch_visited.begin(), num_branch_visited.end());

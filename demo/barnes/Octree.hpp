@@ -100,12 +100,9 @@ class Octree {
     ComputeNodeMassRecursive(root_);
 
     // New stuff
-    const auto count = statistic_.num_leaf_nodes * params_.leaf_max_size;
-    leaf_node_content_table_.resize(count);
+    leaf_node_content_table_.resize(statistic_.num_leaf_nodes *
+                                    params_.leaf_max_size);
     leaf_node_size_table_.resize(statistic_.num_leaf_nodes);
-
-    std::fill(leaf_node_content_table_.begin(), leaf_node_content_table_.end(),
-              Point4F{-1.0f, 0.0f, 0.0f, 0.0f});
 
     LoadPayloadRecursive(root_);
 

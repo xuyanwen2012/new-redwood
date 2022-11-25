@@ -13,7 +13,7 @@ template <int Dim, typename T>
 Point<Dim, T> MakeLargeRandomPoint() {
   Point<Dim, T> pt;
   for (int i = 0; i < Dim - 1; ++i) {
-    pt.data[i] = my_rand(T(0.0), T(100.0));
+    pt.data[i] = my_rand(T(0.0), T(1000.0));
   }
   // Mass should be much smaller
   pt.data[Dim - 1] = T(1.0) + my_rand<T>();
@@ -25,7 +25,7 @@ template <typename T>
 Point<3, T> MakeLargeQueryPoint() {
   Point<3, T> pt;
   for (int i = 0; i < 3; ++i) {
-    pt.data[i] = my_rand(T(0.0), T(100.0));
+    pt.data[i] = my_rand(T(0.0), T(1000.0));
   }
   return pt;
 }
@@ -48,7 +48,8 @@ int main(int argc, char* argv[]) {
                         cxxopts::value<int>()->default_value("1048576"))(
       "t,theta", "Theta Value", cxxopts::value<float>()->default_value("0.1"))(
       "p,thread", "Num Thread", cxxopts::value<int>()->default_value("1"))(
-      "l,leaf", "Leaf node size", cxxopts::value<unsigned>()->default_value("32"))(
+      "l,leaf", "Leaf node size",
+      cxxopts::value<unsigned>()->default_value("32"))(
       "q,query", "Num to Query", cxxopts::value<int>()->default_value("16384"))(
       "b,num_batch", "Num Batch", cxxopts::value<int>()->default_value("1024"))(
       "s,batch_size", "Batch Size",
@@ -93,7 +94,7 @@ int main(int argc, char* argv[]) {
   const oct::OctreeParams params{
       theta,
       leaf_size,
-      {Point3F{100.0f, 100.0f, 100.0f}, Point3F{50.0f, 50.0f, 50.0f}}};
+      {Point3F{1000.0f, 1000.0f, 1000.0f}, Point3F{500.0f, 500.0f, 500.0f}}};
   const auto tree_ptr =
       std::make_shared<oct::Octree<float>>(h_in_data.data(), n, params);
   tree_ptr->BuildTree();
