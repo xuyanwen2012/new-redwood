@@ -1,9 +1,8 @@
 #pragma once
 
 #include <array>
-#include <cstdlib>
+#include <numeric>
 
-#include "../../src/Containers.hpp"
 #include "../PointCloud.hpp"
 
 namespace oct {
@@ -101,9 +100,12 @@ class Octree {
     ComputeNodeMassRecursive(root_);
 
     // New stuff
-    leaf_node_content_table_.Allocate(statistic_.num_leaf_nodes *
-                                      params_.leaf_max_size);
-    leaf_node_size_table_.Allocate(statistic_.num_leaf_nodes);
+    const auto count = statistic_.num_leaf_nodes * params_.leaf_max_size;
+    leaf_node_content_table_.resize(count);
+    leaf_node_size_table_.resize(statistic_.num_leaf_nodes);
+
+    std::fill(leaf_node_content_table_.begin(), leaf_node_content_table_.end(),
+              Point4F{-1.0f, 0.0f, 0.0f, 0.0f});
 
     LoadPayloadRecursive(root_);
 
@@ -120,12 +122,12 @@ class Octree {
   _NODISCARD OctreeStatistic GetStats() const { return statistic_; }
   _NODISCARD OctreeParams<T> GetParams() const { return params_; }
 
-  _NODISCARD const redwood::UnifiedContainer<PointT>& GetLeafNodeTable() {
-    return leaf_node_content_table_;
+  _NODISCARD const PointT* GetLeafNodeTable() {
+    return leaf_node_content_table_.data();
   }
 
-  _NODISCARD const redwood::UnifiedContainer<unsigned>& GetLeafSizeTable() {
-    return leaf_node_size_table_;
+  _NODISCARD const unsigned* GetLeafSizeTable() {
+    return leaf_node_size_table_.data();
   }
 
   Node<T>* BuildRecursive(const BoundingBox<T> box,
@@ -164,11 +166,6 @@ class Octree {
             box, data_[idx].data[X], data_[idx].data[Y], data_[idx].data[Z]);
         sub_bodies[quadrant].push_back(idx);
       }
-
-      //   for (int i = 0; i < 8; ++i) {
-      //     std::cout << sub_bodies[i].size() << std::endl;
-      //   }
-      //   exit(1);
 
       node->children[0] = BuildRecursive(
           BoundingBox<T>{half_dimension,
@@ -326,13 +323,12 @@ class Octree {
 
   Node<T>* root_;
 
-  redwood::UnifiedContainer<PointT> leaf_node_content_table_;
-  redwood::UnifiedContainer<unsigned> leaf_node_size_table_;
+  std::vector<PointT> leaf_node_content_table_;
+  std::vector<unsigned> leaf_node_size_table_;
 
   OctreeParams<T> params_;
   OctreeStatistic statistic_;
   const PointT* data_;
   const int data_size_;
 };
-
 }  // namespace oct

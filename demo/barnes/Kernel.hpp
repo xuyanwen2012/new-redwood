@@ -7,9 +7,6 @@ struct MyFunctor {
 
   // GPU version
   _REDWOOD_KERNEL Point3F operator()(const Point4F p, const Point3F q) const {
-    // For SYCL backend, use negative points to indicate invalid
-    if (p.data[0] < 0.0f) return Point3F();
-
     const auto dx = p.data[0] - q.data[0];
     const auto dy = p.data[1] - q.data[1];
     const auto dz = p.data[2] - q.data[2];

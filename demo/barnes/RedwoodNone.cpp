@@ -4,6 +4,8 @@
 #include <vector>
 
 #include "../../src/Redwood.hpp"
+#include "../PointCloud.hpp"
+#include "Executor.hpp"
 
 namespace redwood {
 
@@ -29,8 +31,7 @@ void ReduceBranchNode(const long tid, const void* node_element,
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {}
 
-void SetQueryPoints(const long tid, const void* query_points,
-                    const unsigned num_query) {
+void SetQueryNum(long tid, unsigned num_query) {
   num_branch_visited.resize(num_query);
   num_leaf_visited.resize(num_query);
 }
@@ -47,7 +48,7 @@ void SetBranchBatchShape(const unsigned num, const unsigned size) {}
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {}
 
 void EndReducer() {
-  for (int i = 0; i < 1024; ++i) {
+  for (int i = 0; i < 256; ++i) {
     std::cout << i << ":\tbr: " << num_branch_visited[i]
               << "\tle: " << num_leaf_visited[i] << std::endl;
   }

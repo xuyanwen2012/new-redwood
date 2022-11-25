@@ -1,101 +1,115 @@
-#include <cstdlib>
-#include <cstring>
+// This is used to Test the Theroy
+#include <algorithm>
+#include <iostream>
+#include <numeric>
 #include <vector>
 
 #include "../../src/Redwood.hpp"
 #include "../PointCloud.hpp"
-#include "Kernel.cuh"
+#include "Executor.hpp"
+#include "Kernel.hpp"
 
 namespace redwood {
-constexpr auto kDebugPrint = false;
 
-// Constants
-unsigned stored_leaf_size;
-unsigned stored_num_treads;
+using DataT = Point4F;
+using QueryT = Point3F;
+using ResultT = Point3F;
 
-// Shared Data
-const Point4F* leaf_nodes_data;
-const unsigned* leaf_node_sizes;
+// Stats
+std::vector<int> num_branch_visited;
+std::vector<int> num_leaf_visited;
 
-// Thread Local Data
-std::vector<const Point3F*> query_data_base;
-std::vector<std::vector<Point3F>> results;
+// Consts
+int stored_leaf_size;
+int stored_num_threads;
+int stored_num_batches;
+
+// Shared
+const Task<QueryT>* host_tasks_ref;
+const DataT* host_leaf_table_ref;
+const unsigned* host_leaf_sizes_ref;
+std::vector<ResultT> final_results;
 
 void InitReducer(const unsigned num_threads, const unsigned leaf_size,
                  const unsigned batch_num, const unsigned batch_size) {
-  stored_num_treads = num_threads;
-  stored_leaf_size = leaf_size;
-
-  query_data_base.resize(num_threads);
-  results.resize(num_threads);
+  stored_num_threads = static_cast<int>(num_threads);
+  stored_leaf_size = static_cast<int>(leaf_size);
+  stored_num_batches = static_cast<int>(batch_num);
 }
 
 void StartQuery(const long tid, const unsigned query_idx) {}
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
-  // Must set 'leaf_nodes_data' before calling this function
-  if constexpr (kDebugPrint) {
-    std::cout << tid << ": ReduceLeafNode, node id:  " << node_idx << std::endl;
+  constexpr auto functor = MyFunctor();
+
+  const auto leaf_size = host_leaf_sizes_ref[query_idx];
+
+  // std::cout << leaf_size << std::endl;
+  // std::cout << host_tasks_ref[query_idx] << std::endl;
+
+  for (int i = 0; i < leaf_size; ++i) {
+    final_results[query_idx] +=
+        functor(host_leaf_table_ref[node_idx * stored_leaf_size + i],
+                host_tasks_ref[query_idx].query_point);
   }
 
-  Point3F sum{};
-  auto kernel_func = MyFunctor();
+  const auto start = host_leaf_table_ref + node_idx * stored_leaf_size;
+  const auto end = start + leaf_size;
 
-  const auto num = leaf_node_sizes[node_idx];
-  for (auto i = 0u; i < num; ++i) {
-    sum += kernel_func(leaf_nodes_data[node_idx * stored_leaf_size + i],
-                       query_data_base[tid][query_idx]);
-  }
-
-  results[tid][query_idx] += sum;
+  ++num_leaf_visited[query_idx];
 }
 
 void ReduceBranchNode(const long tid, const void* node_element,
                       unsigned query_idx) {
-  if constexpr (kDebugPrint) {
-    std::cout << tid << ": ReduceBranchNode, node id:  " << node_element
-              << std::endl;
-  }
+  constexpr auto functor = MyFunctor();
+  auto com = static_cast<const DataT*>(node_element);
 
-  auto kernel_func = MyFunctor();
-  const auto p = static_cast<const Point4F*>(node_element);
-  results[tid][query_idx] += kernel_func(*p, query_data_base[tid][query_idx]);
+  final_results[query_idx] +=
+      functor(*com, host_tasks_ref[query_idx].query_point);
 
-  // if constexpr (true) {
-  //   std::cout << "\tresults[tid][query_idx]: " << results[tid][query_idx]
-  //             << " *p:\t" << *p << "\tquery_data_base[tid][query_idx]"
-  //             << query_data_base[tid][query_idx] << std::endl;
-  // }
+  ++num_branch_visited[query_idx];
 }
 
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {
-  auto addr = static_cast<Point3F*>(result);
-  *addr = results[tid][query_idx];
+  const auto addr = static_cast<ResultT*>(result);
+  *addr = final_results[query_idx];
 }
 
-void SetQueryPoints(const long tid, const void* query_points,
-                    const unsigned num_query) {
-  query_data_base[tid] = static_cast<const Point3F*>(query_points);
-  results[tid].resize(num_query);
-}
+void SetQueryPoints(long tid, const void* query_points, unsigned num_query) {
+  host_tasks_ref = reinterpret_cast<const Task<QueryT>*>(query_points);
 
-void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
-  leaf_nodes_data = static_cast<const Point4F*>(leaf_node_table);
+  final_results.resize(num_query);
+
+  num_branch_visited.resize(num_query);
+  num_leaf_visited.resize(num_query);
 }
 
 void SetNodeTables(const void* leaf_node_table,
                    const unsigned* leaf_node_sizes_,
                    const unsigned num_leaf_nodes) {
-  SetNodeTables(leaf_node_table, num_leaf_nodes);
-  leaf_node_sizes = leaf_node_sizes_;
+  host_leaf_table_ref = static_cast<const DataT*>(leaf_node_table);
+  host_leaf_sizes_ref = static_cast<const unsigned*>(leaf_node_sizes_);
 }
 
 void SetBranchBatchShape(const unsigned num, const unsigned size) {}
 
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {}
 
-void EndReducer() {}
+void EndReducer() {
+  // for (int i = 0; i < 256; ++i) {
+  //   std::cout << i << ":\tbr: " << num_branch_visited[i]
+  //             << "\tle: " << num_leaf_visited[i] << std::endl;
+  // }
+
+  const auto br_max =
+      *std::max_element(num_branch_visited.begin(), num_branch_visited.end());
+  const auto le_max =
+      *std::max_element(num_leaf_visited.begin(), num_leaf_visited.end());
+
+  std::cout << "Br Max: " << br_max << std::endl;
+  std::cout << "Le Max: " << le_max << std::endl;
+}
 
 }  // namespace redwood
