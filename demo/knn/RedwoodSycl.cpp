@@ -93,8 +93,8 @@ struct NnBuffer {
   redwood::UsmVector<int> leaf_idx;         // num_batch
 };
 
-void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
-                     const int num_batch_to_process) {
+void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer,
+                      const int num_batch_to_process) {
   constexpr auto kernel_func = MyFunctor();
 
   const auto task_ptr = buffer.tasks.data();
@@ -153,8 +153,8 @@ void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
   });
 }
 
-void ProcessNnBufferCpu(const NnBuffer& buffer,
-                        const int num_batch_to_process) {
+void ProcessKnnBufferCpu(const NnBuffer& buffer,
+                         const int num_batch_to_process) {
   constexpr auto kernel_func = MyFunctor();
 
   auto result_ptr = knn_results[cur_collecting].results_usm.data();
@@ -236,10 +236,10 @@ void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
   constexpr auto threshold = 64;
   if (num_batch_collected < threshold) {
-    ProcessNnBufferCpu(nn_buffers[cur_collecting], num_batch_collected);
+    ProcessKnnBufferCpu(nn_buffers[cur_collecting], num_batch_collected);
   } else {
-    ProcessNnBuffer(qs[cur_collecting], nn_buffers[cur_collecting],
-                    num_batch_collected);
+    ProcessKnnBuffer(qs[cur_collecting], nn_buffers[cur_collecting],
+                     num_batch_collected);
   }
 
   const auto next = 1 - cur_collecting;
@@ -253,10 +253,6 @@ void ReduceLeafNodeWithTask(long tid, const unsigned node_idx,
                             const void* task) {
   const auto t = static_cast<const Task*>(task);
   nn_buffers[cur_collecting].PushNewTask(*t, node_idx);
-}
-
-void* GetUnifiedResultLocation(long tid, const int query_idx) {
-  return &knn_results[cur_collecting].results_usm[query_idx * kK];
 }
 
 void EndReducer() {}
