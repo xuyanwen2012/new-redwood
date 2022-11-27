@@ -406,6 +406,7 @@ void EndReducer() {
   const auto next = 1 - cur_collecting;
   qs[next].wait();
   FinishProcessBhLeafPack(bh_buffers[next]);
+  if constexpr (kOffloadBranchNode) FinishProcessBhBranchPack(bh_buffers[next]);
 
   if constexpr (false) {
     for (int i = 0; i < 32; ++i) {
