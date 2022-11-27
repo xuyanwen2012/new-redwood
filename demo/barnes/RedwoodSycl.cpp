@@ -7,20 +7,12 @@
 #include <vector>
 
 #include "../../src/Redwood.hpp"
+#include "../../src/sycl/Utils.hpp"
 #include "../PointCloud.hpp"
 #include "Executor.hpp"
 #include "Kernel.hpp"
 
 struct BhPack;
-
-template <typename T>
-using UsmAlloc = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
-
-template <typename T>
-using UsmVector = std::vector<T, UsmAlloc<T>>;
-
-using IntAlloc = UsmAlloc<int>;
-using FloatAlloc = UsmAlloc<float>;
 
 // ------------------- Application Types -------------------
 
@@ -65,51 +57,6 @@ int leaf_reduced_counter = 0;
 std::vector<int> num_branch_visited;
 std::vector<int> num_leaf_visited;
 
-// -------------- SYCL related -------------
-
-void ShowDevice(const sycl::queue& q) {
-  // Output platform and device information.
-  const auto device = q.get_device();
-  const auto p_name =
-      device.get_platform().get_info<sycl::info::platform::name>();
-  std::cout << std::setw(20) << "Platform Name: " << p_name << "\n";
-  const auto p_version =
-      device.get_platform().get_info<sycl::info::platform::version>();
-  std::cout << std::setw(20) << "Platform Version: " << p_version << "\n";
-  const auto d_name = device.get_info<sycl::info::device::name>();
-  std::cout << std::setw(20) << "Device Name: " << d_name << "\n";
-  const auto max_work_group =
-      device.get_info<sycl::info::device::max_work_group_size>();
-  std::cout << std::setw(20) << "Max Work Group: " << max_work_group << "\n";
-  const auto max_compute_units =
-      device.get_info<sycl::info::device::max_compute_units>();
-  std::cout << std::setw(20) << "Max Compute Units: " << max_compute_units
-            << "\n\n";
-}
-
-static auto exception_handler = [](sycl::exception_list eList) {
-  for (const std::exception_ptr& e : eList) {
-    try {
-      std::rethrow_exception(e);
-    } catch (const std::exception& e) {
-#if DEBUG
-      std::cout << "Failure" << std::endl;
-#endif
-      std::terminate();
-    }
-  }
-};
-
-void WarmUp(sycl::queue& q) {
-  int sum;
-  sycl::buffer<int> sum_buf(&sum, 1);
-  q.submit([&](auto& h) {
-    sycl::accessor sum_acc(sum_buf, h, sycl::write_only, sycl::no_init);
-    h.parallel_for(1, [=](auto) { sum_acc[0] = 0; });
-  });
-  q.wait();
-}
-
 // -------------- Buffer related -------------
 
 // Single query
@@ -118,11 +65,11 @@ struct BhPack {
 
   BhPack(const sycl::queue& q, const int batch_size)
       : my_task(),
-        leaf_nodes(IntAlloc(q)),
-        branch_data(UsmAlloc<DataT>(q)),
-        tmp_results_br(UsmAlloc<ResultT>(q)),
+        leaf_nodes(redwood::IntAlloc(q)),
+        branch_data(redwood::UsmAlloc<DataT>(q)),
+        tmp_results_br(redwood::UsmAlloc<ResultT>(q)),
         tmp_count_br(),
-        tmp_results_le(UsmAlloc<ResultT>(q)),
+        tmp_results_le(redwood::UsmAlloc<ResultT>(q)),
         tmp_count_le() {
     // If it grow larger then let it happen. I don't care
     leaf_nodes.reserve(batch_size);
@@ -152,12 +99,12 @@ struct BhPack {
 
   // Actual batch data , a single task with many many branch/leaf_idx
   redwood::Task<QueryT> my_task;
-  UsmVector<int> leaf_nodes;
-  UsmVector<DataT> branch_data;
+  redwood::UsmVector<int> leaf_nodes;
+  redwood::UsmVector<DataT> branch_data;
 
   // Some temporary space used for itermediate results,
-  UsmVector<ResultT> tmp_results_br;
-  UsmVector<ResultT> tmp_results_le;
+  redwood::UsmVector<ResultT> tmp_results_br;
+  redwood::UsmVector<ResultT> tmp_results_le;
   int tmp_count_br;
   int tmp_count_le;
 };
