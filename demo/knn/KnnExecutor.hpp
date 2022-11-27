@@ -36,11 +36,13 @@ class KnnExecutor {
     stack_.reserve(16);
   }
 
+  void Init(const int tid) { tid_ = tid; }
+
   void StartQuery(const Task& task) {
     task_ = task;
     stack_.clear();
     cur_ = nullptr;
-    GetReductionResult(0, task.query_idx, &cached_result_set_);
+    GetReductionResult(tid_, task.query_idx, &cached_result_set_);
     Execute();
   }
 
@@ -62,7 +64,7 @@ class KnnExecutor {
       // Traverse all the way to left most leaf node
       while (cur_ != nullptr) {
         if (cur_->IsLeaf()) {
-          ReduceLeafNodeWithTask(0, cur_->uid, &task_);
+          ReduceLeafNodeWithTask(tid_, cur_->uid, &task_);
 
           // **** Coroutine Reuturn ****
           return;
@@ -117,7 +119,7 @@ class KnnExecutor {
     state_ = ExecutionState::kFinished;
   }
 
-  // long tid_;
+  int tid_;
 
   // Actually essential data in a executor
   Task task_;

@@ -115,7 +115,7 @@ class NnExecutor {
     state_ = ExecutionState::kFinished;
   }
 
-  // long tid_;
+  // int tid_;
 
   // Actually essential data in a executor
   Task task_;
