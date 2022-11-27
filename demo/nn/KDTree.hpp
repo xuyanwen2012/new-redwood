@@ -38,7 +38,6 @@ struct Node {
 
   Node* left_child;
   Node* right_child;
-
   int uid;  // In this version this is used only for leaf nodes.
 };
 
@@ -101,8 +100,8 @@ class KdTree {
 
   _NODISCARD KdtStatistic GetStats() const { return statistic_; }
   _NODISCARD KdtParams GetParams() const { return params_; }
-  _NODISCARD DataSetT& GetNodeContentTable() { return h_node_content_table_; };
-  _NODISCARD const Node* GetRoot() const { return root_; };
+  _NODISCARD DataSetT& GetNodeContentTable() { return h_node_content_table_; }
+  _NODISCARD const Node* GetRoot() const { return root_; }
 
   Node* BuildRecursive(const unsigned left_idx, const unsigned right_idx,
                        const int depth) {
@@ -175,6 +174,7 @@ class KdTree {
     return uid_counter++;
   }
 
+  // Accessor
   Node* root_;
   std::vector<unsigned> v_acc_;
 
@@ -183,8 +183,8 @@ class KdTree {
   DataSetT h_node_content_table_;
   unsigned node_table_size_;
 
+  // Statistics informations for/of the tree construction
   KdtParams params_;
   KdtStatistic statistic_;
 };
-
 }  // namespace kdt
