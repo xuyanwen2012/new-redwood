@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "../../src/Redwood.hpp"
-#include "KDTree.hpp"
-#include "Kernel.hpp"
+#include "../nn/KDTree.hpp"
+#include "../nn/Kernel.hpp"
 #include "KnnSet.hpp"
 
 namespace redwood {

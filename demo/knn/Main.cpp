@@ -4,10 +4,9 @@
 
 #include "../../src/Redwood.hpp"
 #include "../PointCloud.hpp"
+#include "../nn/KDTree.hpp"
+#include "../nn/Kernel.hpp"
 #include "Executor.hpp"
-#include "KDTree.hpp"
-#include "Kernel.hpp"
-// #include "KnnSet.hpp"
 
 std::vector<float> CpuNaiveQuery(const Point4F* in_data, const Point4F q,
                                  const unsigned n, const int k) {
@@ -107,9 +106,6 @@ int main() {
               << "\tQuery point " << for_display[i].query_point << '\n';
 
     if constexpr (kRedwoodBackend != redwood::Backends::kCpu) {
-      // auto result_set =
-      //     static_cast<float*>(redwood::GetUnifiedResultLocation(0, i));
-
       float* result_set;
       redwood::GetReductionResult(0, i, &result_set);
 
