@@ -5,7 +5,7 @@
 
 #include "../../src/Redwood.hpp"
 #include "../../src/sycl/Utils.hpp"
-#include "Executor.hpp"
+#include "KnnExecutor.hpp"
 #include "KnnSet.hpp"
 
 struct NnBuffer;

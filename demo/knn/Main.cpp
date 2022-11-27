@@ -6,7 +6,7 @@
 #include "../PointCloud.hpp"
 #include "../nn/KDTree.hpp"
 #include "../nn/Kernel.hpp"
-#include "Executor.hpp"
+#include "KnnExecutor.hpp"
 
 std::vector<float> CpuNaiveQuery(const Point4F* in_data, const Point4F q,
                                  const unsigned n, const int k) {
@@ -66,7 +66,9 @@ int main() {
     redwood::SetNodeTables(h_lnd, num_leaf_nodes);
     redwood::SetQueryPoints(tid, nullptr, num_task_per_thread);
 
-    std::vector<redwood::dev::KnnExecutorManager<float>> managers;
+    using KnnManager =
+        redwood::dev::ExecutorManager<float, redwood::dev::KnnExecutor>;
+    std::vector<KnnManager> managers;
     managers.reserve(num_threads);
     managers.emplace_back(kdt_ptr, tasks_to_do, num_batches, tid);
 

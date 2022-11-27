@@ -7,28 +7,14 @@
 #include <vector>
 
 #include "../../src/Redwood.hpp"
-#include "KDTree.hpp"
-#include "Kernel.hpp"
+#include "../nn/ExecutorManager.hpp"
+#include "../nn/KDTree.hpp"
+#include "../nn/Kernel.hpp"
+#include "KnnSet.hpp"
 
 namespace redwood {
-struct Task {
-  int query_idx;
-  Point4F query_point;
-};
 
 namespace dev {
-enum class ExecutionState { kWorking, kFinished };
-
-constexpr auto kLogLevel = 1;
-
-// Global reference to the single KD tree
-inline std::shared_ptr<kdt::KdTree> tree_ref;
-inline std::shared_ptr<std::vector<float>> result_ref;
-
-struct ExecutorStats {
-  int leaf_node_reduced = 0;
-  int branch_node_reduced = 0;
-};
 
 // -------------------------------------------------------------------------------------------------
 // SYCL Executor related here
@@ -44,9 +30,9 @@ struct CallStackField {
   kdt::Dir dir;
 };
 
-class NnExecutor {
+class KnnExecutor {
  public:
-  NnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
+  KnnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
     stack_.reserve(16);
   }
 
@@ -54,7 +40,7 @@ class NnExecutor {
     task_ = task;
     stack_.clear();
     cur_ = nullptr;
-    GetReductionResult(0, task.query_idx, &cached_result_addr_);
+    GetReductionResult(0, task.query_idx, &cached_result_set_);
     Execute();
   }
 
@@ -96,7 +82,7 @@ class NnExecutor {
         const float dist =
             kernel_func(tree_ref->data_set_[accessor_idx], task_.query_point);
 
-        *cached_result_addr_ = std::min(*cached_result_addr_, dist);
+        cached_result_set_->Insert(dist);
 
         // **********************************
 
@@ -121,7 +107,7 @@ class NnExecutor {
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
         if (const auto diff = task_.query_point.data[axis] - train;
-            diff * diff < *cached_result_addr_) {
+            diff * diff < cached_result_set_->WorstDist()) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -139,95 +125,13 @@ class NnExecutor {
   ExecutionState state_;
   kdt::Node* cur_;
 
-  float* cached_result_addr_;  // a pointer to the USM of 1 float
+  KnnSet<float, 32>*
+      cached_result_set_;  // a pointer to the KNN set of 32 float (idx * 32)
 };
 
 // -------------------------------------------------------------------------------------------------
 // KNN here
 // -------------------------------------------------------------------------------------------------
-
-template <typename T>
-class KnnExecutorManager {
- public:
-  KnnExecutorManager() = delete;
-
-  KnnExecutorManager(const std::shared_ptr<kdt::KdTree> tree,
-                     std::vector<Task>& tasks, const int num_batches,
-                     const int tid = 0)
-      : my_tasks_(tasks), num_batches_(num_batches) {
-    // Save reference to
-    if (!tree_ref) {
-      std::cout << "[DEBUG] kdt::KdTree Reference Set!" << std::endl;
-      tree_ref = tree;
-    }
-
-    assert(tasks.size() % num_batches == 0);
-
-    // Need to do double buffering
-    executors_.resize(2 * num_batches);
-
-    std::cout << "Manager "
-              << ":\n"
-              << "\tnum queries: " << my_tasks_.size() << '\n'
-              << "\tnum batches: " << num_batches_ << '\n'
-              << "\tnum executors: " << executors_.size() << '\n'
-              << std::endl;
-  }
-
-  void StartTraversals() {
-    while (!executors_.empty()) {
-      auto mid_point = executors_.begin() + executors_.size() / 2;
-      for (auto it = executors_.begin(); it != mid_point;) {
-        if (!it->Finished()) {
-          it->Resume();
-          ++it;
-          continue;
-        }
-
-        if (my_tasks_.empty()) {
-          it = executors_.erase(it);
-          --mid_point;
-        } else {
-          const auto task = my_tasks_.back();
-          my_tasks_.pop_back();
-          it->StartQuery(task);
-          ++it;
-        }
-      }
-
-      ExecuteBatchedKernelsAsync(0,
-                                 std::distance(executors_.begin(), mid_point));
-
-      for (auto it = mid_point; it != executors_.end();) {
-        if (!it->Finished()) {
-          it->Resume();
-          ++it;
-          continue;
-        }
-
-        if (my_tasks_.empty()) {
-          it = executors_.erase(it);
-        } else {
-          const auto task = my_tasks_.back();
-          my_tasks_.pop_back();
-          it->StartQuery(task);
-          ++it;
-        }
-      }
-
-      ExecuteBatchedKernelsAsync(0, std::distance(mid_point, executors_.end()));
-    }
-  }
-
-  _NODISCARD ExecutorStats GetStats() const { return stats_; }
-
- private:
-  std::vector<Task>& my_tasks_;
-  std::vector<NnExecutor> executors_;
-
-  const int num_batches_;
-  ExecutorStats stats_;
-};
 
 #endif
 
@@ -249,9 +153,14 @@ class SequentialManager {
       tree_ref = tree;
     }
 
-    result_.resize(my_tasks_.size());
-    std::fill(result_.begin(), result_.end(),
-              std::numeric_limits<float>::max());
+    cpu_results_ =
+        static_cast<float*>(malloc(sizeof(float) * 32 * my_tasks_.size()));
+    std::fill_n(cpu_results_, 32 * my_tasks_.size(),
+                std::numeric_limits<float>::max());
+
+    for (int i = 0; i < 4; ++i) {
+      std::cout << my_tasks_[i].query_point << std::endl;
+    }
 
     std::cout << "Sequential Manager "
               << ":\n"
@@ -264,18 +173,20 @@ class SequentialManager {
       const auto task = my_tasks_.back();
       my_tasks_.pop_back();
 
-      NnSearchRecursive(tree_ref->GetRoot(), task);
+      KnnSearchRecursive(tree_ref->GetRoot(), task);
     }
   }
 
-  float GetCpuResult(const int query_idx) const { return result_[query_idx]; }
+  float* GetCpuResult(const int query_idx) const {
+    return cpu_sets_[query_idx].rank;
+  }
 
  protected:
-  void NnSearchRecursive(const kdt::Node* cur, const Task task) {
+  void KnnSearchRecursive(const kdt::Node* cur, const Task task) {
     static auto kernel_func = MyFunctor();
 
     if (cur->IsLeaf()) {
-      ++stats_.leaf_node_reduced;
+      // ++stats_.leaf_node_reduced;
 
       // **** Reduction at leaf node ****
       const auto leaf_size = tree_ref->params_.leaf_max_size;
@@ -284,21 +195,19 @@ class SequentialManager {
             tree_ref->GetNodeContentTable()[cur->uid * leaf_size + i];
         const auto dist = kernel_func(p, task.query_point);
 
-        // cpu_sets_[task.query_idx].Insert(dist);
-        result_[task.query_idx] = std::min(result_[task.query_idx], dist);
+        cpu_sets_[task.query_idx].Insert(dist);
       }
       // **********************************
     } else {
       const unsigned accessor_idx =
           tree_ref->v_acc_[cur->node_type.tree.idx_mid];
 
-      ++stats_.branch_node_reduced;
+      // ++stats_.branch_node_reduced;
 
       // **** Reduction at branch node ****
       const auto dist = kernel_func(
           tree_ref->GetNodeContentTable()[accessor_idx], task.query_point);
-      // cpu_sets_[task.query_idx].Insert(dist);
-      result_[task.query_idx] = std::min(result_[task.query_idx], dist);
+      cpu_sets_[task.query_idx].Insert(dist);
 
       // **********************************
 
@@ -307,25 +216,22 @@ class SequentialManager {
       const auto dir = task.query_point.data[axis] < train ? kdt::Dir::kLeft
                                                            : kdt::Dir::kRight;
 
-      NnSearchRecursive(cur->GetChild(dir), task);
+      KnnSearchRecursive(cur->GetChild(dir), task);
 
       if (const auto diff = task.query_point.data[axis] - train;
-          diff * diff < result_[task.query_idx]) {
-        NnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
+          diff * diff < cpu_sets_[task.query_idx].WorstDist()) {
+        KnnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
       }
     }
   }
 
  private:
   std::vector<Task>& my_tasks_;
-  ExecutorStats stats_;
 
-  std::vector<float> result_;
-
-  // union {
-  //   KnnSet<float, 32>* cpu_sets_;
-  //   float* cpu_results_;
-  // };
+  union {
+    KnnSet<float, 32>* cpu_sets_;
+    float* cpu_results_;
+  };
 };
 }  // namespace dev
 }  // namespace redwood

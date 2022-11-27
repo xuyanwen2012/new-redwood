@@ -4,9 +4,9 @@
 
 #include "../../src/Redwood.hpp"
 #include "../PointCloud.hpp"
-#include "Executor.hpp"
 #include "KDTree.hpp"
 #include "Kernel.hpp"
+#include "NnExecutor.hpp"
 
 float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
   constexpr auto kernel_func = MyFunctor();
@@ -65,7 +65,9 @@ int main() {
     redwood::SetNodeTables(h_lnd, num_leaf_nodes);
     redwood::SetQueryPoints(tid, nullptr, num_task_per_thread);
 
-    std::vector<redwood::dev::KnnExecutorManager<float>> managers;
+    using NnManager =
+        redwood::dev::ExecutorManager<float, redwood::dev::NnExecutor>;
+    std::vector<NnManager> managers;
     managers.reserve(num_threads);
     managers.emplace_back(kdt_ptr, tasks_to_do, num_batches, tid);
 
