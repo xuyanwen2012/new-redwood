@@ -1,105 +1,87 @@
 #include <CL/sycl.hpp>
-#include <algorithm>
-#include <memory>
+#include <iomanip>
+#include <iostream>
 #include <vector>
 
-#include "../PointCloud.hpp"
-#include "Kernel.cuh"
-#include "KnnResultSet.hpp"
+#include "../../src/Redwood.hpp"
+#include "Executor.hpp"
+#include "KnnSet.hpp"
 
-namespace redwood {
-
-// Vector types
-struct alignas(8) uint2 {
-  unsigned int x, y;
-};
-
-static inline uint2 make_uint2(unsigned int x, unsigned int y) {
-  uint2 t;
-  t.x = x;
-  t.y = y;
-  return t;
-}
+struct NnBuffer;
 
 template <typename T>
-using VectorAllocator = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
+using UsmAlloc = sycl::usm_allocator<T, sycl::usm::alloc::shared>;
 
 template <typename T>
-using AlignedVector = std::vector<T, VectorAllocator<T>>;
+using UsmVector = std::vector<T, UsmAlloc<T>>;
+
+using IntAlloc = UsmAlloc<int>;
+using FloatAlloc = UsmAlloc<float>;
 
 // ------------------- Constants -------------------
 constexpr auto kBlockThreads = 256;
-constexpr auto kNumStreams = 1;
+constexpr auto kNumStreams = 2;  // Assume 2
+constexpr auto kK = 32;          // Assume
 
-constexpr auto kK = 32;
 int stored_leaf_size;
 int stored_num_threads;
-int stored_num_batches;  // num_batches == num_work_groups == num_executors
+int stored_num_batches;
 
+sycl::default_selector d_selector;
 sycl::device device;
 sycl::context ctx;
-sycl::property_list props;
 
-// ------------------- Variables -------------------
+// ------------------- Vars -------------------
 
-sycl::queue q[kNumStreams];
+sycl::queue qs[kNumStreams];
+std::vector<NnBuffer> nn_buffers;
+
+std::vector<UsmVector<float>> knn_results_usm;  // k * m
+std::vector<UsmVector<float>> temp_dist_usm;    // num_batch * (leaf_size)
+
 int cur_collecting;
 
-// ------------------- Shared Data -------------------
+// ------------------- Shared Constant Pointer to  -------------------
 
-const Point4F* q_points_ref;
-std::unique_ptr<sycl::buffer<Point4F>> b_query_point_buf;
+// const Point4F* host_query_points_ref;
 
-const Point4F* lnd_ref;
-std::unique_ptr<sycl::buffer<Point4F>>
-    b_node_data_buf;  // Constant, so this buffer will always be there
-
-// if 'm' queryies, then 'm * k'
-std::vector<float> le_results;
-std::vector<KnnResultSet<float, int>> result_sets;
-
-// std::unique_ptr<sycl::buffer<Point3F>> b_result_buf;
-
-// -------------- Buffer related -------------
-
-struct NnBatch {
-  NnBatch(const int num) {
-    next_avalible_slot = 0;
-    stored_num_batches = num;
-
-    const auto bytes = sizeof(uint2) * num;
-    u_buffer =
-        static_cast<uint2*>(sycl::malloc_host(bytes, ctx, props));
-        // static_cast<uint2*>(sycl::malloc_shared(bytes, device, ctx, props));
-  };
-
-  ~NnBatch() { sycl::free(u_buffer, ctx); }
-
-  void LoadLeafNode(const unsigned q_idx, const unsigned node_idx) {
-    u_buffer[next_avalible_slot] = make_uint2(q_idx, node_idx);
-    ++next_avalible_slot;
-  }
-
-  void Reset() {
-    // std::fill(u_buffer + next_avalible_slot, u_buffer + stored_num_batches,
-    //           uint2{std::numeric_limits<unsigned>::max(),
-    //                 std::numeric_limits<unsigned>::max()});
-
-    next_avalible_slot = 0;
-  }
-
-  // the first element is 'query_index', and the second element is 'node_index'
-  uint2* u_buffer;
-
-  // Misc
-  int next_avalible_slot;
-  int stored_num_batches;
-};
-
-std::vector<NnBatch> batches;
-static inline NnBatch& CurrentBatch() { return batches[cur_collecting]; }
+const Point4F* host_leaf_node_table_ref;
+std::unique_ptr<sycl::buffer<Point4F>> leaf_node_table_buf;
 
 // -------------- SYCL related -------------
+
+void ShowDevice(const sycl::queue& q) {
+  // Output platform and device information.
+  const auto device = q.get_device();
+  const auto p_name =
+      device.get_platform().get_info<sycl::info::platform::name>();
+  std::cout << std::setw(20) << "Platform Name: " << p_name << "\n";
+  const auto p_version =
+      device.get_platform().get_info<sycl::info::platform::version>();
+  std::cout << std::setw(20) << "Platform Version: " << p_version << "\n";
+  const auto d_name = device.get_info<sycl::info::device::name>();
+  std::cout << std::setw(20) << "Device Name: " << d_name << "\n";
+  const auto max_work_group =
+      device.get_info<sycl::info::device::max_work_group_size>();
+  std::cout << std::setw(20) << "Max Work Group: " << max_work_group << "\n";
+  const auto max_compute_units =
+      device.get_info<sycl::info::device::max_compute_units>();
+  std::cout << std::setw(20) << "Max Compute Units: " << max_compute_units
+            << "\n\n";
+}
+
+static auto exception_handler = [](sycl::exception_list eList) {
+  for (const std::exception_ptr& e : eList) {
+    try {
+      std::rethrow_exception(e);
+    } catch (const std::exception& e) {
+#if DEBUG
+      std::cout << "Failure" << std::endl;
+#endif
+      std::terminate();
+    }
+  }
+};
 
 void WarmUp(sycl::queue& q) {
   int sum;
@@ -111,219 +93,241 @@ void WarmUp(sycl::queue& q) {
   q.wait();
 }
 
-// -------------- REDwood APIs -------------
+// -------------- Buffer related -------------
+
+// Knn buffer is the same as Nn buffer (it is just indices);
+struct NnBuffer {
+  NnBuffer() = delete;
+
+  NnBuffer(const sycl::queue& q, const int num_batch)
+      : tasks(UsmAlloc<redwood::Task>(q)), leaf_idx(IntAlloc(q)) {
+    tasks.reserve(num_batch);
+    leaf_idx.reserve(num_batch);
+  }
+
+  _NODISCARD size_t Size() const { return leaf_idx.size(); }
+
+  void Clear() {
+    // TODO: no need to clear every time, just overwrite the value
+    tasks.clear();
+    leaf_idx.clear();
+  }
+
+  void PushNewTask(const redwood::Task& task, const int leaf_id) {
+    tasks.push_back(task);
+    leaf_idx.push_back(leaf_id);
+  }
+
+  void UpdateLeafForExistingTask(const int batch_id, const int new_leaf_id) {
+    // Make sure 'batch_id < this.Size()';
+    leaf_idx[batch_id] = new_leaf_id;
+  }
+
+  UsmVector<redwood::Task> tasks;
+  UsmVector<int> leaf_idx;
+};
+
+void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
+                     const int num_batch_to_process) {
+  constexpr auto kernel_func = MyFunctor();
+
+  const auto leaf_size = stored_leaf_size;
+
+  const auto task_ptr = buffer.tasks.data();
+  const auto leaf_idx_ptr = buffer.leaf_idx.data();
+  auto result_ptr = knn_results_usm[cur_collecting].data();
+
+  q.submit([&](sycl::handler& h) {
+    const sycl::accessor leaf_table_acc(*leaf_node_table_buf, h,
+                                        sycl::read_only);
+
+    h.parallel_for(
+        sycl::range(num_batch_to_process), [=](const sycl::id<1> idx) {
+          const auto leaf_id = leaf_idx_ptr[idx];
+          const auto query_point = task_ptr[idx].query_point;
+          const auto query_idx = task_ptr[idx].query_idx;
+
+          float my_set[kK];
+          for (int i = 0; i < kK; ++i)
+            my_set[i] = result_ptr[query_idx * kK + i];
+
+          for (int i = 0; i < leaf_size; ++i) {
+            const auto dist = kernel_func(
+                leaf_table_acc[leaf_id * leaf_size + i], query_point);
+
+            //------------------- Lower Bound -----
+            // float dist = i / 10.0 + 0.00001f;
+
+            int first = 0;
+            int count = kK;
+            while (count > 0) {
+              int it = first;
+              const int step = count / 2;
+              it += step;
+              if (my_set[it] < dist) {
+                first = ++it;
+                count -= step + 1;
+              } else
+                count = step;
+            }
+
+            //------------------- Right shift -----
+
+            const auto low = first;
+            for (int j = kK - 1; j > low; --j) {
+              my_set[j] = my_set[j - 1];
+            }
+
+            //------------------- Right shift -----
+            my_set[low] = dist;
+          }
+
+          for (int j = 0; j < kK; ++j)
+            result_ptr[query_idx * kK + j] = my_set[j];
+        });
+  });
+}
+
+void ProcessNnBufferCpu(const NnBuffer& buffer,
+                        const int num_batch_to_process) {
+  constexpr auto kernel_func = MyFunctor();
+
+  auto result_ptr = knn_results_usm[cur_collecting].data();
+  static std::vector<float> temp_sorter(stored_leaf_size + kK);
+
+  for (int batch_id = 0; batch_id < num_batch_to_process; ++batch_id) {
+    const auto leaf_id = buffer.leaf_idx[batch_id];
+    const auto query_point = buffer.tasks[batch_id].query_point;
+    const auto query_idx = buffer.tasks[batch_id].query_idx;
+
+    for (int i = 0; i < stored_leaf_size; ++i) {
+      const auto dist =
+          kernel_func(host_leaf_node_table_ref[leaf_id * stored_leaf_size + i],
+                      query_point);
+
+      temp_sorter[i] = dist;
+    }
+    std::copy_n(result_ptr + query_idx * kK, kK,
+                temp_sorter.begin() + stored_leaf_size);
+
+    std::nth_element(temp_sorter.begin(), temp_sorter.begin() + kK,
+                     temp_sorter.end());
+    std::copy_n(temp_sorter.begin(), kK, result_ptr + query_idx * kK);
+  }
+}
+
+namespace redwood {
 void InitReducer(const unsigned num_threads, const unsigned leaf_size,
                  const unsigned batch_num, const unsigned batch_size) {
-  // Save Parameters
-  stored_num_threads = num_threads;
-  stored_leaf_size = leaf_size;
-  stored_num_batches = batch_num;
+  stored_num_threads = static_cast<int>(num_threads);
+  stored_leaf_size = static_cast<int>(leaf_size);
+  stored_num_batches = static_cast<int>(batch_num);
 
-  // Set up Sycl
-  // Intel(R) UHD Graphics [0x9b41] on Parakeet
-  device = sycl::device::get_devices(sycl::info::device_type::all)[1];
-  std::cout << "SYCL Device: " << device.get_info<sycl::info::device::name>()
-            << std::endl;
-  props = {sycl::property::buffer::use_host_ptr()};
+  try {
+    device = sycl::device(sycl::gpu_selector());
+  } catch (const sycl::exception& e) {
+    std::cout << "Cannot select a GPU\n" << e.what() << "\n";
+    exit(1);
+  }
 
-  q[0] = sycl::queue(device);
+  qs[0] = sycl::queue(device);
   for (int i = 1; i < kNumStreams; i++)
-    q[i] = sycl::queue(q[0].get_context(), device);
+    qs[i] = sycl::queue(qs[0].get_context(), device);
 
-  // Setup
-  for (int i = 0; i < kNumStreams; i++) batches.emplace_back(batch_num);
+  ShowDevice(qs[0]);
 
-  for (int i = 0; i < kNumStreams; i++) WarmUp(q[0]);
+  for (auto& q : qs) {
+    nn_buffers.emplace_back(q, stored_num_batches);
+  }
 
+  WarmUp(qs[0]);
   cur_collecting = 0;
+
+  // Temp
+  const auto total_count = stored_num_batches * (leaf_size);
+  temp_dist_usm.reserve(kNumStreams);
+  temp_dist_usm.emplace_back(total_count, FloatAlloc(qs[0]));
+  temp_dist_usm.emplace_back(total_count, FloatAlloc(qs[1]));
 }
 
 void StartQuery(const long tid, const unsigned query_idx) {}
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
-                    const unsigned query_idx) {
-  batches[cur_collecting].LoadLeafNode(query_idx, node_idx);
-}
+                    const unsigned query_idx) {}
 
 void ReduceBranchNode(const long tid, const void* node_element,
-                      unsigned query_idx) {
-  constexpr auto kernel_func = MyFunctor();
-  const auto p = static_cast<const Point4F*>(node_element);
-  auto dist = kernel_func(*p, q_points_ref[query_idx]);
-  result_sets[query_idx].AddPoint(dist);
-}
+                      unsigned query_idx) {}
 
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {
-  // TODO: Add offset
   auto addr = static_cast<float**>(result);
-  *addr = le_results.data() + query_idx * kK;
+  *addr = knn_results_usm[cur_collecting].data() + query_idx * kK;
 }
 
 void SetQueryPoints(const long tid, const void* query_points,
                     const unsigned num_query) {
-  q_points_ref = static_cast<const Point4F*>(query_points);
-  b_query_point_buf = std::make_unique<sycl::buffer<Point4F>>(
-      q_points_ref, sycl::range{num_query}, props);
+  const auto total_count = num_query * kK;
+  knn_results_usm.reserve(kNumStreams);
+  knn_results_usm.emplace_back(total_count, FloatAlloc(qs[0]));
+  knn_results_usm.emplace_back(total_count, FloatAlloc(qs[1]));
+  std::fill(knn_results_usm[0].begin(), knn_results_usm[0].end(),
+            std::numeric_limits<float>::max());
+  std::fill(knn_results_usm[1].begin(), knn_results_usm[1].end(),
+            std::numeric_limits<float>::max());
 
-  // Set results
-  le_results.resize(num_query * kK);
-  result_sets.reserve(num_query);
-  for (int i = 0; i < num_query; ++i) {
-    result_sets.emplace_back(kK);
-    result_sets[i].Init(le_results.data() + i * kK);
-  }
+  // std::make_shared<PersistentResults<float, kK>>(usm.data());
 }
 
 void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
-  auto lnd = static_cast<const Point4F*>(leaf_node_table);
-  lnd_ref = lnd;
-  b_node_data_buf = std::make_unique<sycl::buffer<Point4F>>(
-      lnd, sycl::range{num_leaf_nodes * stored_leaf_size}, props);
+  host_leaf_node_table_ref = static_cast<const Point4F*>(leaf_node_table);
+  leaf_node_table_buf = std::make_unique<sycl::buffer<Point4F>>(
+      host_leaf_node_table_ref, sycl::range{num_leaf_nodes * stored_leaf_size});
 }
 
-void SetNodeTables(const void* leaf_node_table,
-                   const unsigned* leaf_node_sizes_,
+void SetNodeTables(const void* leaf_node_table, const unsigned* leaf_node_sizes,
                    const unsigned num_leaf_nodes) {
   SetNodeTables(leaf_node_table, num_leaf_nodes);
 }
 
-void ProcessBatch(NnBatch& batch) {
-  constexpr auto functor = MyFunctor();
-
-  for (int i = 0; i < stored_num_batches; ++i) {
-    uint2 content = batches[cur_collecting].u_buffer[i];
-    const auto q_idx = content.x;
-    const auto q_point = q_points_ref[q_idx];
-    const auto leaf_idx = content.y;
-
-    for (int j = 0; j < stored_leaf_size; ++j) {
-      const auto dist =
-          functor(lnd_ref[leaf_idx * stored_leaf_size + j], q_point);
-      result_sets[q_idx].AddPoint(dist);
-    }
-  }
-}
-
-void ProcessBatchSycl(sycl::queue& q, NnBatch& batch) {
-  constexpr auto functor = MyFunctor();
-
-  const auto total_num_items =
-      stored_num_batches * stored_leaf_size;  // 1024 * 256
-
-  // 1k->4, 256->1, For Sycl, lets have leaf size >256
-  const auto items_per_thread = stored_leaf_size / kBlockThreads;
-
-  // For 'nd_range'
-  const auto num_total_works = total_num_items;  /// items_per_thread;
-
-  // Potentially move this out
-  std::vector<float> dists(total_num_items);
-
-  {
-    sycl::buffer dists_buf(dists);
-    sycl::buffer<uint2> buffer_buf(batch.u_buffer, stored_num_batches);
-
-    const auto local_stored_leaf_size = stored_leaf_size;
-
-    q.submit([&](auto& h) {
-      sycl::accessor leaf_table_acc(*b_node_data_buf, h, sycl::read_only);
-      sycl::accessor query_table_acc(*b_query_point_buf, h, sycl::read_only);
-
-      sycl::accessor buffer_acc(buffer_buf, h, sycl::read_only);
-
-      sycl::accessor dist_acc(dists_buf, h, sycl::write_only, sycl::no_init);
-
-      h.parallel_for(
-          sycl::nd_range<1>(num_total_works, kBlockThreads),
-          [=](const sycl::nd_item<1> item) {
-            const auto global_id = item.get_global_id(0);
-            const auto local_id = item.get_local_id(0);  // 0...255
-            const auto group_id = item.get_group(0);  // 0...1024 aka batch_id
-
-            //const auto batch_id = ;
-            //const auto index_in_batch = ;
-
-            const uint2 content = buffer_acc[group_id];
-            const auto q_idx = content.x;
-            const auto leaf_idx = content.y;
-            const auto q_point = query_table_acc[q_idx];
-
-            dist_acc[global_id] = functor(
-                leaf_table_acc[leaf_idx * local_stored_leaf_size + local_id],
-                q_point);
-            //            dist_acc[global_id] = functor(
-            //              leaf_table_acc[0],
-            //              local_q_points_ref[0]);
-          });
-    });
-  }
-
-  // Write Back the results
-  for (int i = 0; i < stored_num_batches; ++i) {
-    std::for_each(dists.begin() + i * stored_leaf_size,
-                  dists.begin() + i * stored_leaf_size + stored_leaf_size,
-                  [&](auto dist) { result_sets[i].AddPoint(dist); });
-  }
-}
-
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
-  // At this point, buffers are filled.
-  // const auto num_leaf_to_process =
-  // batches[cur_collecting].next_avalible_slot; std::cout <<
-  // "num_leaf_to_process: " << stored_num_batches << std::endl;
+  constexpr auto threshold = 64;
+  if (num_batch_collected < threshold) {
+    ProcessNnBufferCpu(nn_buffers[cur_collecting], num_batch_collected);
+  } else {
+    // StartProcessBuffer(qs[cur_collecting], nn_buffers[cur_collecting],
+    // num_batch_collected);
 
-  constexpr auto functor = MyFunctor();
+    ProcessNnBuffer(qs[cur_collecting], nn_buffers[cur_collecting],
+                    num_batch_collected);
+  }
 
-  // std::vector<float> dists(total_num_items);
+  const auto next = 1 - cur_collecting;
+  qs[next].wait();
 
-  ProcessBatchSycl(q[cur_collecting], batches[cur_collecting]);
+  if (num_batch_collected >= threshold) {
+    // FinishProcessBuffer(nn_buffers[next], next);
+  }
 
-  // {
-  //   sycl::buffer dists_buf(dists);  // 1024 * 1024
-  //   sycl::buffer buffer_buf(batch[cur_collecting].u_buffer,
-  //   stored_num_batches);
-
-  //   q[cur_collecting].submit([&](auto& h) {
-  //     sycl::accessor leaf_table_acc(*b_node_data_buf, h, sycl::read_only);
-  //     sycl::accessor query_table_acc(*b_query_point_buf, h, sycl::read_only);
-
-  //     sycl::accessor buffer_acc(buffer_buf, h, sycl::read_only);
-
-  //     sycl::accessor dist_acc(dists_buf, h, sycl::write_only, sycl::no_init);
-
-  //     h.parallel_for(sycl::nd_range<1>(num_total_works, kBlockThreads),
-  //                    [=](const sycl::nd_item<1> item) {
-  //                      const auto global_id = item.get_global_id(0);
-  //                      const auto group_id = item.get_group(0);  // 0...4095
-  //                      / 4
-
-  //                     //buffer_acc;
-
-  //                     //  for (int i = 0; i < items_per_thread; ++i) {
-  //                     //    dist_acc[global_id * items_per_thread + i] =
-  //                     functor(
-  //                     //        leaf_table_acc[global_id * items_per_thread +
-  //                     i],
-  //                     //        query_table_acc[group_id]);
-  //                     //  }
-  //                    });
-  //   });
-  // }
-
-  // for (int i = 0; i < stored_num_batches; ++i) {
-  //   for (int j = 0; j < kK; ++j) {
-  //     result_sets[i].AddPoint(dists[i * kK + j]);
-  //   }
-  // }
-
-  // Switch
-  auto next_collecting = (cur_collecting + 1) % kNumStreams;
-  q[next_collecting].wait();
-  cur_collecting = next_collecting;
-  batches[cur_collecting].Reset();
+  nn_buffers[next].Clear();
+  cur_collecting = next;
 }
 
-void EndReducer() {}
+void ReduceLeafNodeWithTask(long tid, const unsigned node_idx,
+                            const void* task) {
+  const auto t = static_cast<const Task*>(task);
+  nn_buffers[cur_collecting].PushNewTask(*t, node_idx);
+}
 
+void* GetUnifiedResultLocationBase(long tid) {
+  return knn_results_usm[cur_collecting].data();
+}
+
+void* GetUnifiedResultLocation(long tid, const int query_idx) {
+  return knn_results_usm[cur_collecting].data() + query_idx * kK;
+}
+
+void EndReducer() {
+  // const auto next = 1 - cur_collecting;
+  // qs[next].wait();
+}
 }  // namespace redwood
