@@ -33,6 +33,8 @@ constexpr auto kBlockThreads = 256;
 constexpr auto kNumStreams = 2;  // Assume 2
 constexpr auto kOffloadBranchNode = false;
 
+constexpr auto kDebugPrint = false;
+
 int stored_leaf_size;
 int stored_num_threads;
 int stored_num_batches;
@@ -42,29 +44,24 @@ sycl::default_selector d_selector;
 sycl::device device;
 sycl::context ctx;
 
-// ------------------- Vars -------------------
+// ------------------- Global Shared  -------------------
 
-sycl::queue qs[kNumStreams];
-std::vector<BhPack> bh_buffers;
-
-int cur_collecting;
-
-// ------------------- Shared Constant Pointer to  -------------------
-
-// Shared
-const redwood::Task<QueryT>* host_tasks_ref;
 const DataT* host_leaf_table_ref;
 const unsigned* host_leaf_sizes_ref;
-std::vector<ResultT> final_results;
 
+// readonly buffers
 std::unique_ptr<sycl::buffer<DataT>> leaf_node_table_buf;
 std::unique_ptr<sycl::buffer<unsigned>> leaf_sizes_buf;
 
+// ------------------- Thread local -------------------
+
+std::vector<ResultT> final_results;
+sycl::queue qs[kNumStreams];
+std::vector<BhPack> bh_buffers;  // two buffers per cpu thread
+int cur_collecting;
+
+// ------------------- Stats -------------------
 int leaf_reduced_counter = 0;
-
-std::vector<int> host_query_to_task_map;
-
-// Stats
 std::vector<int> num_branch_visited;
 std::vector<int> num_leaf_visited;
 
@@ -160,8 +157,8 @@ struct BhPack {
 
   // Some temporary space used for itermediate results,
   UsmVector<ResultT> tmp_results_br;
-  int tmp_count_br;
   UsmVector<ResultT> tmp_results_le;
+  int tmp_count_br;
   int tmp_count_le;
 };
 
@@ -174,37 +171,29 @@ void StartProcessBhLeafPack(sycl::queue& q, BhPack& pack) {
     return;
   }
 
-  const auto leaf_idx_ptr = pack.leaf_nodes.data();
-  const auto query_point = pack.my_task.query_point;
-
   // Each work is a leaf, 'data_size' == leaf collected in the pack
   const auto num_work_items =
       MyRoundUp(data_size, static_cast<size_t>(kBlockThreads));
   const auto num_work_groups = num_work_items / kBlockThreads;
-
-  // std::cout << "One Stage Reduction with " << num_work_items << " leafs. "
-  //	<< "num_work_groups: " << num_work_groups << std::endl;
 
   if (num_work_groups > 1024) {
     std::cout << "should not happen" << std::endl;
     exit(1);
   }
 
-  // DEBUG:
-  // std::cout << data_size << std::endl;
-  for (int i = 0; i < data_size; ++i) {
-    leaf_reduced_counter += host_leaf_sizes_ref[leaf_idx_ptr[i]];
-  }
-
+  // Remember how many SYCL work gourps was uses, so later we can reduce them on
+  // the host once the results are produced
   pack.tmp_count_le = num_work_groups;
-  const auto tmp_result_ptr = pack.tmp_results_le.data();
 
+  const auto leaf_idx_ptr = pack.leaf_nodes.data();
+  const auto query_point = pack.my_task.query_point;
+  const auto tmp_result_ptr = pack.tmp_results_le.data();
   const auto max_leaf_size = stored_leaf_size;
+
   q.submit([&](sycl::handler& h) {
     const sycl::accessor leaf_table_acc(*leaf_node_table_buf, h,
                                         sycl::read_only);
     const sycl::accessor leaf_sizes_acc(*leaf_sizes_buf, h, sycl::read_only);
-
     const sycl::local_accessor<ResultT, 1> scratch(kBlockThreads, h);
 
     h.parallel_for(sycl::nd_range<1>(num_work_items, kBlockThreads),
@@ -237,6 +226,12 @@ void StartProcessBhLeafPack(sycl::queue& q, BhPack& pack) {
                      if (local_id == 0) tmp_result_ptr[group_id] = scratch[0];
                    });
   });
+
+  if constexpr (kDebugPrint) {
+    for (int i = 0; i < data_size; ++i) {
+      leaf_reduced_counter += host_leaf_sizes_ref[leaf_idx_ptr[i]];
+    }
+  }
 }
 
 void FinishProcessBhLeafPack(const BhPack& pack) {
@@ -263,9 +258,6 @@ void StartProcessBhBranchPack(sycl::queue& q, BhPack& pack) {
   const auto num_work_items =
       MyRoundUp(data_size, static_cast<size_t>(kBlockThreads));
   const auto num_work_groups = num_work_items / kBlockThreads;
-
-  // std::cout << "One Stage Reduction with " << num_work_items << " leafs. "
-  //	<< "num_work_groups: " << num_work_groups << std::endl;
 
   if (num_work_groups > 1024) {
     std::cout << "should not happen" << std::endl;
@@ -337,6 +329,7 @@ void InitReducer(const unsigned num_threads, const unsigned leaf_size,
   }
 
   WarmUp(qs[0]);
+
   cur_collecting = 0;
 }
 
@@ -348,7 +341,8 @@ void StartQuery(long tid, const void* task_obj) {
 void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
   bh_buffers[cur_collecting].PushLeaf(node_idx);
-  ++num_leaf_visited[query_idx];
+
+  if constexpr (kDebugPrint) ++num_leaf_visited[query_idx];
 }
 
 void ReduceBranchNode(const long tid, const void* node_element,
@@ -360,12 +354,11 @@ void ReduceBranchNode(const long tid, const void* node_element,
 
   } else {
     constexpr auto functor = MyFunctor();
-    const auto task_id = host_query_to_task_map[query_idx];
-    final_results[query_idx] +=
-        functor(*com, host_tasks_ref[task_id].query_point);
+    const auto q = bh_buffers[cur_collecting].my_task.query_point;
+    final_results[query_idx] += functor(*com, q);
   }
 
-  ++num_branch_visited[query_idx];
+  if constexpr (kDebugPrint) ++num_branch_visited[query_idx];
 }
 
 void GetReductionResult(const long tid, const unsigned query_idx,
@@ -375,17 +368,12 @@ void GetReductionResult(const long tid, const unsigned query_idx,
 }
 
 void SetQueryPoints(long tid, const void* query_points, unsigned num_query) {
-  host_tasks_ref = static_cast<const Task<QueryT>*>(query_points);
   final_results.resize(num_query);
 
-  // Temp work around
-  host_query_to_task_map.resize(num_query);
-  for (int i = 0; i < num_query; ++i) {
-    host_query_to_task_map[host_tasks_ref[i].query_idx] = i;
+  if constexpr (kDebugPrint) {
+    num_branch_visited.resize(num_query);
+    num_leaf_visited.resize(num_query);
   }
-
-  num_branch_visited.resize(num_query);
-  num_leaf_visited.resize(num_query);
 }
 
 void SetNodeTables(const void* leaf_node_table, const unsigned* leaf_node_sizes,
@@ -426,14 +414,15 @@ void EndReducer() {
     }
   }
 
-  std::cout << "leaf_reduced_counter: " << leaf_reduced_counter << std::endl;
+  if constexpr (kDebugPrint) {
+    std::cout << "leaf_reduced_counter: " << leaf_reduced_counter << std::endl;
+    const auto br_max =
+        *std::max_element(num_branch_visited.begin(), num_branch_visited.end());
+    const auto le_max =
+        *std::max_element(num_leaf_visited.begin(), num_leaf_visited.end());
 
-  const auto br_max =
-      *std::max_element(num_branch_visited.begin(), num_branch_visited.end());
-  const auto le_max =
-      *std::max_element(num_leaf_visited.begin(), num_leaf_visited.end());
-
-  std::cout << "Br Max: " << br_max << std::endl;
-  std::cout << "Le Max: " << le_max << std::endl;
+    std::cout << "Br Max: " << br_max << std::endl;
+    std::cout << "Le Max: " << le_max << std::endl;
+  }
 }
 }  // namespace redwood

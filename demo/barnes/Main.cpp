@@ -13,7 +13,7 @@ template <int Dim, typename T>
 Point<Dim, T> MakeLargeRandomPoint() {
   Point<Dim, T> pt;
   for (int i = 0; i < Dim - 1; ++i) {
-    pt.data[i] = my_rand(T(0.0), T(1000.0));
+    pt.data[i] = my_rand(T(0.0), T(100.0));
   }
   // Mass should be much smaller
   pt.data[Dim - 1] = T(1.0) + my_rand<T>();
@@ -25,7 +25,7 @@ template <typename T>
 Point<3, T> MakeLargeQueryPoint() {
   Point<3, T> pt;
   for (int i = 0; i < 3; ++i) {
-    pt.data[i] = my_rand(T(0.0), T(1000.0));
+    pt.data[i] = my_rand(T(0.0), T(100.0));
   }
   return pt;
 }
@@ -79,15 +79,11 @@ int main(int argc, char* argv[]) {
   const std::vector for_display(tasks_to_do.begin(), tasks_to_do.begin() + 5);
   std::reverse(tasks_to_do.begin(), tasks_to_do.end());
 
-  // for (int i = 0; i < 2; ++i) {
-  //   std::cout << tasks_to_do[i].query_point << std::endl;
-  // }
-
   std::cout << "Building Tree... " << '\n';
   const oct::OctreeParams params{
       theta,
       leaf_size,
-      {Point3F{1000.0f, 1000.0f, 1000.0f}, Point3F{500.0f, 500.0f, 500.0f}}};
+      {Point3F{100.0f, 100.0f, 100.0f}, Point3F{50.0f, 50.0f, 50.0f}}};
   const auto tree_ptr =
       std::make_shared<oct::Octree<float>>(h_in_data.data(), n, params);
   tree_ptr->BuildTree();
