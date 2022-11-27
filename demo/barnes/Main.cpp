@@ -30,17 +30,6 @@ Point<3, T> MakeLargeQueryPoint() {
   return pt;
 }
 
-Point3F CpuNaiveQuery(const Point4F* in_data, const Point3F q,
-                      const unsigned n) {
-  constexpr auto kernel_func = MyFunctor();
-  Point3F sum{};
-  for (auto i = 0u; i < n; ++i) {
-    const auto force = kernel_func(in_data[i], q);
-    sum += force;
-  }
-  return sum;
-}
-
 int main(int argc, char* argv[]) {
   cxxopts::Options options("Barnes Hut",
                            "Heterogeneous Computing N-Body Problem");
@@ -90,6 +79,10 @@ int main(int argc, char* argv[]) {
   const std::vector for_display(tasks_to_do.begin(), tasks_to_do.begin() + 5);
   std::reverse(tasks_to_do.begin(), tasks_to_do.end());
 
+  // for (int i = 0; i < 2; ++i) {
+  //   std::cout << tasks_to_do[i].query_point << std::endl;
+  // }
+
   std::cout << "Building Tree... " << '\n';
   const oct::OctreeParams params{
       theta,
@@ -127,13 +120,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Query " << i << ":\n"
               << "\tquery_point: \t" << for_display[i].query_point << '\n'
               << "\tforce:    \t" << rst << '\n';
-
-    if constexpr (constexpr auto show_ground_truth = false) {
-      std::cout << "\tground_truth: \t"
-                << CpuNaiveQuery(h_in_data.data(), for_display[i].query_point,
-                                 n)
-                << '\n';
-    }
     std::cout << std::endl;
   }
 

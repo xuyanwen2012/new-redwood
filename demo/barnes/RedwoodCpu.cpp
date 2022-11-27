@@ -32,6 +32,8 @@ const DataT* host_leaf_table_ref;
 const unsigned* host_leaf_sizes_ref;
 std::vector<ResultT> final_results;
 
+std::vector<int> host_query_to_task_map;
+
 void InitReducer(const unsigned num_threads, const unsigned leaf_size,
                  const unsigned batch_num, const unsigned batch_size) {
   stored_num_threads = static_cast<int>(num_threads);
@@ -45,12 +47,13 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
   constexpr auto functor = MyFunctor();
 
-  const auto leaf_size = host_leaf_sizes_ref[query_idx];
+  const auto task_id = host_query_to_task_map[query_idx];
+  const auto q = host_tasks_ref[task_id].query_point;
+  const auto leaf_size = host_leaf_sizes_ref[node_idx];
   for (int i = 0; i < leaf_size; ++i) {
     ++leaf_reduced_counter;
     final_results[query_idx] +=
-        functor(host_leaf_table_ref[node_idx * stored_leaf_size + i],
-                host_tasks_ref[query_idx].query_point);
+        functor(host_leaf_table_ref[node_idx * stored_leaf_size + i], q);
   }
 
   ++num_leaf_visited[query_idx];
@@ -61,8 +64,9 @@ void ReduceBranchNode(const long tid, const void* node_element,
   constexpr auto functor = MyFunctor();
   auto com = static_cast<const DataT*>(node_element);
 
+  const auto task_id = host_query_to_task_map[query_idx];
   final_results[query_idx] +=
-      functor(*com, host_tasks_ref[query_idx].query_point);
+      functor(*com, host_tasks_ref[task_id].query_point);
 
   ++num_branch_visited[query_idx];
 }
@@ -74,9 +78,14 @@ void GetReductionResult(const long tid, const unsigned query_idx,
 }
 
 void SetQueryPoints(long tid, const void* query_points, unsigned num_query) {
-  host_tasks_ref = reinterpret_cast<const Task<QueryT>*>(query_points);
-
+  host_tasks_ref = static_cast<const Task<QueryT>*>(query_points);
   final_results.resize(num_query);
+
+  // Temp work around
+  host_query_to_task_map.resize(num_query);
+  for (int i = 0; i < num_query; ++i) {
+    host_query_to_task_map[host_tasks_ref[i].query_idx] = i;
+  }
 
   num_branch_visited.resize(num_query);
   num_leaf_visited.resize(num_query);
@@ -86,7 +95,7 @@ void SetNodeTables(const void* leaf_node_table,
                    const unsigned* leaf_node_sizes_,
                    const unsigned num_leaf_nodes) {
   host_leaf_table_ref = static_cast<const DataT*>(leaf_node_table);
-  host_leaf_sizes_ref = static_cast<const unsigned*>(leaf_node_sizes_);
+  host_leaf_sizes_ref = leaf_node_sizes_;
 }
 
 void SetBranchBatchShape(const unsigned num, const unsigned size) {}

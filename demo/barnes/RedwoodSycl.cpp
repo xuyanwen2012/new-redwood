@@ -60,8 +60,9 @@ std::vector<ResultT> final_results;
 std::unique_ptr<sycl::buffer<DataT>> leaf_node_table_buf;
 std::unique_ptr<sycl::buffer<unsigned>> leaf_sizes_buf;
 
-// I think these should be put in to the buffer struct
-// int leaf_reduced_counter = 0;
+int leaf_reduced_counter = 0;
+
+std::vector<int> host_query_to_task_map;
 
 // Stats
 std::vector<int> num_branch_visited;
@@ -191,9 +192,9 @@ void StartProcessBhLeafPack(sycl::queue& q, BhPack& pack) {
 
   // DEBUG:
   // std::cout << data_size << std::endl;
-  // for (int i = 0; i < data_size; ++i) {
-  //   leaf_reduced_counter += host_leaf_sizes_ref[leaf_idx_ptr[i]];
-  // }
+  for (int i = 0; i < data_size; ++i) {
+    leaf_reduced_counter += host_leaf_sizes_ref[leaf_idx_ptr[i]];
+  }
 
   pack.tmp_count_le = num_work_groups;
   const auto tmp_result_ptr = pack.tmp_results_le.data();
@@ -347,7 +348,6 @@ void StartQuery(long tid, const void* task_obj) {
 void ReduceLeafNode(const long tid, const unsigned node_idx,
                     const unsigned query_idx) {
   bh_buffers[cur_collecting].PushLeaf(node_idx);
-
   ++num_leaf_visited[query_idx];
 }
 
@@ -360,8 +360,9 @@ void ReduceBranchNode(const long tid, const void* node_element,
 
   } else {
     constexpr auto functor = MyFunctor();
+    const auto task_id = host_query_to_task_map[query_idx];
     final_results[query_idx] +=
-        functor(*com, host_tasks_ref[query_idx].query_point);
+        functor(*com, host_tasks_ref[task_id].query_point);
   }
 
   ++num_branch_visited[query_idx];
@@ -376,6 +377,12 @@ void GetReductionResult(const long tid, const unsigned query_idx,
 void SetQueryPoints(long tid, const void* query_points, unsigned num_query) {
   host_tasks_ref = static_cast<const Task<QueryT>*>(query_points);
   final_results.resize(num_query);
+
+  // Temp work around
+  host_query_to_task_map.resize(num_query);
+  for (int i = 0; i < num_query; ++i) {
+    host_query_to_task_map[host_tasks_ref[i].query_idx] = i;
+  }
 
   num_branch_visited.resize(num_query);
   num_leaf_visited.resize(num_query);
@@ -408,6 +415,10 @@ void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
 }
 
 void EndReducer() {
+  const auto next = 1 - cur_collecting;
+  qs[next].wait();
+  FinishProcessBhLeafPack(bh_buffers[next]);
+
   if constexpr (false) {
     for (int i = 0; i < 32; ++i) {
       std::cout << i << ":\tbr: " << num_branch_visited[i]
@@ -415,7 +426,7 @@ void EndReducer() {
     }
   }
 
-  // std::cout << "leaf_reduced_counter: " << leaf_reduced_counter << std::endl;
+  std::cout << "leaf_reduced_counter: " << leaf_reduced_counter << std::endl;
 
   const auto br_max =
       *std::max_element(num_branch_visited.begin(), num_branch_visited.end());
