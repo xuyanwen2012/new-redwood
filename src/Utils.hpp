@@ -13,6 +13,8 @@ enum class Backends {
 };
 }
 
+// #define REDWOOD_BACKEND 2
+
 #ifdef REDWOOD_BACKEND
 #if REDWOOD_BACKEND == 1
 #define REDWOOD_IN_CUDA

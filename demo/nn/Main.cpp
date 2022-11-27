@@ -96,29 +96,28 @@ int main() {
     return EXIT_SUCCESS;
   }
 
-  // // Display results, and verify correctness
-  // const auto n_display = std::min(num_task_per_thread, 3);
-  // for (auto i = 0; i < n_display; ++i) {
-  //   std::cout << "Query " << i << ":\n"
-  //             << "\tQuery point " << for_display[i].query_point << '\n';
+  // Display results, and verify correctness
+  const auto n_display = std::min(num_task_per_thread, 3);
+  for (auto i = 0; i < n_display; ++i) {
+    std::cout << "Query " << i << ":\n"
+              << "\tQuery point " << for_display[i].query_point << '\n';
 
-  //   if constexpr (kRedwoodBackend != redwood::Backends::kCpu) {
-  //     float rst;
-  //     redwood::GetReductionResult(0l, i, &rst);
+    if constexpr (kRedwoodBackend != redwood::Backends::kCpu) {
+      float* rst;
+      redwood::GetReductionResult(0l, i, &rst);
 
-  //     std::cout << "Query " << i << ":\n"
-  //               << "\tquery_point: \t" << for_display[i].query_point << '\n'
-  //               << "\tresult:      \t" << rst << '\n';
+      std::cout << "Query " << i << ":\n"
+                << "\tquery_point: \t" << for_display[i].query_point << '\n'
+                << "\tresult:      \t" << *rst << '\n';
 
-  //     if constexpr (constexpr auto show_ground_truth = true) {
-  //       std::cout << "\tground_truth: \t"
-  //                 << CpuNaiveQuery(h_in_data.data(),
-  //                 for_display[i].query_point,
-  //                                  n)
-  //                 << '\n';
-  //     }
-  //     std::cout << std::endl;
-  //   }
-
+      if constexpr (constexpr auto show_ground_truth = true) {
+        std::cout << "\tground_truth: \t"
+                  << CpuNaiveQuery(h_in_data.data(), for_display[i].query_point,
+                                   n)
+                  << '\n';
+      }
+      std::cout << std::endl;
+    }
+  }
   return EXIT_SUCCESS;
 }

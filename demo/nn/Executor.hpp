@@ -44,9 +44,9 @@ struct CallStackField {
   kdt::Dir dir;
 };
 
-class KnnExecutor {
+class NnExecutor {
  public:
-  KnnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
+  NnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
     stack_.reserve(16);
   }
 
@@ -54,7 +54,7 @@ class KnnExecutor {
     task_ = task;
     stack_.clear();
     cur_ = nullptr;
-    GetReductionResult(0, task.query_idx, &cached_result_set_);
+    GetReductionResult(0, task.query_idx, &cached_result_addr_);
     Execute();
   }
 
@@ -96,7 +96,7 @@ class KnnExecutor {
         const float dist =
             kernel_func(tree_ref->data_set_[accessor_idx], task_.query_point);
 
-        cached_result_set_->Insert(dist);
+        *cached_result_addr_ = std::min(*cached_result_addr_, dist);
 
         // **********************************
 
@@ -121,7 +121,7 @@ class KnnExecutor {
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
         if (const auto diff = task_.query_point.data[axis] - train;
-            diff * diff < cached_result_set_->WorstDist()) {
+            diff * diff < *cached_result_addr_) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -139,8 +139,7 @@ class KnnExecutor {
   ExecutionState state_;
   kdt::Node* cur_;
 
-  KnnSet<float, 32>*
-      cached_result_set_;  // a pointer to the KNN set of 32 float (idx * 32)
+  float* cached_result_addr_;  // a pointer to the USM of 1 float
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -224,7 +223,7 @@ class KnnExecutorManager {
 
  private:
   std::vector<Task>& my_tasks_;
-  std::vector<KnnExecutor> executors_;
+  std::vector<NnExecutor> executors_;
 
   const int num_batches_;
   ExecutorStats stats_;

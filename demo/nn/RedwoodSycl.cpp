@@ -1,15 +1,14 @@
 #include <CL/sycl.hpp>
-#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include "../../src/Redwood.hpp"
 #include "../../src/sycl/Utils.hpp"
 #include "Executor.hpp"
-#include "KnnSet.hpp"
 
 struct NnBuffer;
-struct KnnResult;
+struct NnResult;
 
 // ------------------- Application Types -------------------
 
@@ -20,7 +19,6 @@ using ResultT = float;  // Special for KNN
 // ------------------- Constants -------------------
 constexpr auto kBlockThreads = 256;
 constexpr auto kNumStreams = 2;  // Assume 2
-constexpr auto kK = 32;          // Assume
 
 constexpr auto kDebugPrint = false;
 
@@ -36,7 +34,7 @@ sycl::context ctx;
 
 sycl::queue qs[kNumStreams];
 std::vector<NnBuffer> nn_buffers;
-std::vector<KnnResult> knn_results;
+std::vector<NnResult> nn_results;
 int cur_collecting;
 
 // ------------------- Global Shared  -------------------
@@ -51,13 +49,13 @@ std::vector<int> num_leaf_visited;
 
 // -------------- Buffer related -------------
 
-struct KnnResult {
-  KnnResult(const sycl::queue& q, const int num_query)
-      : results_usm(num_query * kK, redwood::UsmAlloc<ResultT>(q)) {
+struct NnResult {
+  NnResult(const sycl::queue& q, const int num_query)
+      : results_usm(num_query, redwood::UsmAlloc<ResultT>(q)) {
     std::fill(results_usm.begin(), results_usm.end(),
               std::numeric_limits<ResultT>::max());
   }
-  redwood::UsmVector<ResultT> results_usm;  // k * m
+  redwood::UsmVector<ResultT> results_usm;  // m
 };
 
 // Knn buffer is the same as Nn buffer (it is just indices);
@@ -99,56 +97,27 @@ void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
 
   const auto task_ptr = buffer.tasks.data();
   const auto leaf_idx_ptr = buffer.leaf_idx.data();
-  const auto result_ptr = knn_results[cur_collecting].results_usm.data();
+  const auto result_ptr = nn_results[cur_collecting].results_usm.data();
 
   const auto local_leaf_size = stored_leaf_size;
   q.submit([&](sycl::handler& h) {
     const sycl::accessor leaf_table_acc(*leaf_node_table_buf, h,
                                         sycl::read_only);
-
     h.parallel_for(
         sycl::range(num_batch_to_process), [=](const sycl::id<1> idx) {
           const auto leaf_id = leaf_idx_ptr[idx];
           const auto query_point = task_ptr[idx].query_point;
           const auto query_idx = task_ptr[idx].query_idx;
 
-          // Copy result K sets
-          ResultT my_set[kK];
-          for (int i = 0; i < kK; ++i)
-            my_set[i] = result_ptr[query_idx * kK + i];
-
+          auto my_min = std::numeric_limits<ResultT>::max();
           for (int i = 0; i < local_leaf_size; ++i) {
             const auto dist = kernel_func(
                 leaf_table_acc[leaf_id * local_leaf_size + i], query_point);
 
-            //------------------- Lower Bound -----
-
-            int first = 0;
-            int count = kK;
-            while (count > 0) {
-              int it = first;
-              const int step = count / 2;
-              it += step;
-              if (my_set[it] < dist) {
-                first = ++it;
-                count -= step + 1;
-              } else
-                count = step;
-            }
-
-            //------------------- Right shift -----
-
-            const auto low = first;
-            for (int j = kK - 1; j > low; --j) {
-              my_set[j] = my_set[j - 1];
-            }
-
-            //------------------- Insert -----
-            my_set[low] = dist;
+            my_min = sycl::min(my_min, dist);
           }
 
-          for (int j = 0; j < kK; ++j)
-            result_ptr[query_idx * kK + j] = my_set[j];
+          result_ptr[query_idx] = sycl::min(result_ptr[query_idx], my_min);
         });
   });
 }
@@ -157,27 +126,23 @@ void ProcessNnBufferCpu(const NnBuffer& buffer,
                         const int num_batch_to_process) {
   constexpr auto kernel_func = MyFunctor();
 
-  auto result_ptr = knn_results[cur_collecting].results_usm.data();
-  static std::vector<ResultT> temp_sorter(stored_leaf_size + kK);
+  auto result_ptr = nn_results[cur_collecting].results_usm.data();
 
   for (int batch_id = 0; batch_id < num_batch_to_process; ++batch_id) {
     const auto leaf_id = buffer.leaf_idx[batch_id];
     const auto query_point = buffer.tasks[batch_id].query_point;
     const auto query_idx = buffer.tasks[batch_id].query_idx;
 
+    auto my_min = std::numeric_limits<ResultT>::max();
     for (int i = 0; i < stored_leaf_size; ++i) {
       const auto dist =
           kernel_func(host_leaf_node_table_ref[leaf_id * stored_leaf_size + i],
                       query_point);
 
-      temp_sorter[i] = dist;
+      my_min = sycl::min(my_min, dist);
     }
-    std::copy_n(result_ptr + query_idx * kK, kK,
-                temp_sorter.begin() + stored_leaf_size);
 
-    std::nth_element(temp_sorter.begin(), temp_sorter.begin() + kK,
-                     temp_sorter.end());
-    std::copy_n(temp_sorter.begin(), kK, result_ptr + query_idx * kK);
+    result_ptr[query_idx] = sycl::min(result_ptr[query_idx], my_min);
   }
 }
 
@@ -215,16 +180,16 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {
   auto addr = static_cast<ResultT**>(result);
-  *addr = &knn_results[cur_collecting].results_usm[query_idx * kK];
+  *addr = &nn_results[cur_collecting].results_usm[query_idx];
 }
 
 void SetQueryPoints(const long tid, const void* query_points,
                     const unsigned num_query) {
-  const auto total_count = num_query * kK;
+  const auto total_count = num_query;
 
-  knn_results.reserve(kNumStreams);
-  knn_results.emplace_back(qs[0], num_query);
-  knn_results.emplace_back(qs[1], num_query);
+  nn_results.reserve(kNumStreams);
+  nn_results.emplace_back(qs[0], num_query);
+  nn_results.emplace_back(qs[1], num_query);
 }
 
 void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
@@ -253,10 +218,6 @@ void ReduceLeafNodeWithTask(long tid, const unsigned node_idx,
                             const void* task) {
   const auto t = static_cast<const Task*>(task);
   nn_buffers[cur_collecting].PushNewTask(*t, node_idx);
-}
-
-void* GetUnifiedResultLocation(long tid, const int query_idx) {
-  return &knn_results[cur_collecting].results_usm[query_idx * kK];
 }
 
 void EndReducer() {}
