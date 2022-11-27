@@ -31,6 +31,12 @@ struct ExecutorStats {
   int branch_node_reduced = 0;
 };
 
+// -------------------------------------------------------------------------------------------------
+// SYCL Executor related here
+// -------------------------------------------------------------------------------------------------
+
+#ifndef REDWOOD_IN_CPU
+
 // Basically, a pointer, an int32, a float, an int
 struct CallStackField {
   kdt::Node* current;
@@ -47,12 +53,9 @@ class KnnExecutor {
 
   void StartQuery(const Task& task) {
     task_ = task;
-    cached_result_set_ = static_cast<KnnSet<float, 32>*>(
-        GetUnifiedResultLocation(0, task.query_idx));
-
     stack_.clear();
     cur_ = nullptr;
-
+    GetReductionResult(0, task.query_idx, &cached_result_set_);
     Execute();
   }
 
@@ -118,7 +121,6 @@ class KnnExecutor {
         // If the difference between the query point and the other splitting
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
-
         if (const auto diff = task_.query_point.data[axis] - train;
             diff * diff < cached_result_set_->WorstDist()) {
           cur_ = last_cur->GetChild(FlipDir(dir));
@@ -228,6 +230,8 @@ class KnnExecutorManager {
   const int num_batches_;
   ExecutorStats stats_;
 };
+
+#endif
 
 // -------------------------------------------------------------------------------------------------
 // CPU Sequential here

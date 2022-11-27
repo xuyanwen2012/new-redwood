@@ -37,5 +37,4 @@ void ExecuteBatchedKernelsAsync(long tid, int num_batch_collected);
 
 void ReduceLeafNodeWithTask(long tid, unsigned node_idx, const void* task);
 
-void* GetUnifiedResultLocation(long tid, int query_idx);
 }  // namespace redwood

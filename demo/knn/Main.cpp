@@ -7,7 +7,7 @@
 #include "Executor.hpp"
 #include "KDTree.hpp"
 #include "Kernel.hpp"
-#include "KnnSet.hpp"
+// #include "KnnSet.hpp"
 
 std::vector<float> CpuNaiveQuery(const Point4F* in_data, const Point4F q,
                                  const unsigned n, const int k) {
@@ -60,8 +60,8 @@ int main() {
   const auto num_leaf_nodes = kdt_ptr->GetStats().num_leaf_nodes;
 
   // Actually use redwood here
-  constexpr auto use_redwood = true;
-  if constexpr (use_redwood) {
+  if constexpr (kRedwoodBackend != redwood::Backends::kCpu) {
+#ifndef REDWOOD_IN_CPU
     std::cout << "Preparing REDwood... " << '\n';
     redwood::InitReducer(num_threads, leaf_size, num_batches);
     redwood::SetNodeTables(h_lnd, num_leaf_nodes);
@@ -76,6 +76,7 @@ int main() {
       managers[tid].StartTraversals();
       redwood::EndReducer();
     });
+#endif
   } else {
     // Cpu
     std::vector<redwood::dev::SequentialManager<float>> managers;
@@ -91,11 +92,8 @@ int main() {
                 << "\tQuery point " << for_display[i].query_point << '\n';
 
       auto result_set = managers[tid].GetCpuResult(i);
-      auto gt =
-          CpuNaiveQuery(h_in_data.data(), for_display[i].query_point, n, k);
       for (int j = 0; j < k; ++j) {
-        std::cout << "\t" << j << ":\t" << result_set[j] << " --- " << gt[j]
-                  << '\n';
+        std::cout << "\t" << j << ":\t" << result_set[j] << '\n';
       }
     }
 
@@ -108,9 +106,13 @@ int main() {
     std::cout << "Query " << i << ":\n"
               << "\tQuery point " << for_display[i].query_point << '\n';
 
-    if constexpr (use_redwood) {
-      auto result_set =
-          static_cast<float*>(redwood::GetUnifiedResultLocation(0, i));
+    if constexpr (kRedwoodBackend != redwood::Backends::kCpu) {
+      // auto result_set =
+      //     static_cast<float*>(redwood::GetUnifiedResultLocation(0, i));
+
+      float* result_set;
+      redwood::GetReductionResult(0, i, &result_set);
+
       std::sort(result_set, result_set + k);
 
       auto gt =

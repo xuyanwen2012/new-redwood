@@ -6,24 +6,30 @@
 
 namespace redwood {
 enum class Backends {
-  kCpu,
+  kCpu = 0,
   kCuda,
   kSycl,
   kDuet,
 };
 }
 
-constexpr auto kDebugMode = true;
-
-#ifdef RUNNING_IN_GEM_5
-constexpr auto kRedwoodBackend = redwood::Backends::kDuet;
-#define _REDWOOD_KERNEL
-
-#elif defined(__CUDACC__)
+#ifdef REDWOOD_BACKEND
+#if REDWOOD_BACKEND == 1
+#define REDWOOD_IN_CUDA
 constexpr auto kRedwoodBackend = redwood::Backends::kCuda;
-#define _REDWOOD_KERNEL __host__ __device__
+#elif REDWOOD_BACKEND == 2
+constexpr auto kRedwoodBackend = redwood::Backends::kSycl;
+#elif REDWOOD_BACKEND == 3
+constexpr auto kRedwoodBackend = redwood::Backends::kDuet;
+#endif
 #else
 constexpr auto kRedwoodBackend = redwood::Backends::kCpu;
+#define REDWOOD_IN_CPU
+#endif
+
+#ifdef REDWOOD_IN_CUDA
+#define _REDWOOD_KERNEL __host__ __device__
+#else
 #define _REDWOOD_KERNEL
 #endif
 
