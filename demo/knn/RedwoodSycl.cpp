@@ -69,7 +69,8 @@ struct NnBatch {
 
     const auto bytes = sizeof(uint2) * num;
     u_buffer =
-        static_cast<uint2*>(sycl::malloc_shared(bytes, device, ctx, props));
+        static_cast<uint2*>(sycl::malloc_host(bytes, ctx, props));
+        // static_cast<uint2*>(sycl::malloc_shared(bytes, device, ctx, props));
   };
 
   ~NnBatch() { sycl::free(u_buffer, ctx); }
@@ -266,7 +267,7 @@ void ProcessBatchSycl(sycl::queue& q, NnBatch& batch) {
   }
 }
 
-void ExecuteBatchedKernelsAsync(long tid) {
+void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
   // At this point, buffers are filled.
   // const auto num_leaf_to_process =
   // batches[cur_collecting].next_avalible_slot; std::cout <<

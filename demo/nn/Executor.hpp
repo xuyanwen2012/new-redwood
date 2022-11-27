@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -26,13 +28,13 @@ struct ExecutorStats {
 
 // Pure CPU Sequential Executor
 template <typename T>
-class KnnCpuManager {
+class NnCpuManager {
   using QueryPointT = Point<4, T>;
 
  public:
-  KnnCpuManager(std::shared_ptr<kdt::KdTree> tree,
-                const QueryPointT* my_query_points, const int my_m,
-                const int tid = 0)
+  NnCpuManager(std::shared_ptr<kdt::KdTree> tree,
+               const QueryPointT* my_query_points, const int my_m,
+               const int tid = 0)
       : tid_(tid), tree_(tree), my_query_points_(my_query_points), my_m_(my_m) {
     tasks_todo_.resize(my_m);
 
@@ -40,13 +42,9 @@ class KnnCpuManager {
               << "\tmy_m: " << my_m_ << '\n'
               << std::endl;
 
-    const auto k = 32;
-    my_results.resize(my_m * k);
-    my_k_sets.reserve(my_m);
-    for (int i = 0; i < my_m; ++i) {
-      my_k_sets.emplace_back(k);
-      my_k_sets[i].Init(my_results.data() + i * k);
-    }
+    results_.resize(my_m);
+    std::fill(results_.begin(), results_.end(),
+              std::numeric_limits<float>::max());
 
     std::iota(tasks_todo_.begin(), tasks_todo_.end(), 0u);
     std::reverse(tasks_todo_.begin(), tasks_todo_.end());
@@ -59,18 +57,18 @@ class KnnCpuManager {
       tasks_todo_.pop_back();
 
       // redwood::StartQuery(tid_, q_idx);
-      KnnSearchRecursive(tree_->GetRoot(), q_idx);
+      NnSearchRecursive(tree_->GetRoot(), q_idx);
     }
   }
 
-  _NODISCARD const T* GetCpuResult(const int query_idx, const int k) const {
-    return &my_results[query_idx * k];
+  _NODISCARD const T GetCpuResult(const int query_idx) const {
+    return results_[query_idx];
   }
 
   _NODISCARD ExecutorStats GetStats() const { return stats_; }
 
  protected:
-  void KnnSearchRecursive(const kdt::Node* cur, const unsigned query_idx) {
+  void NnSearchRecursive(const kdt::Node* cur, const unsigned query_idx) {
     static auto kernel_func = MyFunctor();
 
     if (cur->IsLeaf()) {
@@ -84,8 +82,7 @@ class KnnCpuManager {
         const auto p = tree_->GetNodeContentTable()[cur->uid * leaf_size + i];
         const auto dist = kernel_func(p, q);
 
-        my_k_sets[query_idx].AddPoint(dist);
-        // cpu_results[query_idx].Insert(dist);
+        results_[query_idx] = std::min(results_[query_idx], dist);
       }
       // **********************************
 
@@ -97,7 +94,7 @@ class KnnCpuManager {
       // **** Reduction at branch node ****
       const auto dist = kernel_func(tree_->GetNodeContentTable()[accessor_idx],
                                     my_query_points_[query_idx]);
-      my_k_sets[query_idx].AddPoint(dist);
+      results_[query_idx] = std::min(results_[query_idx], dist);
 
       // **********************************
 
@@ -107,11 +104,11 @@ class KnnCpuManager {
                            ? kdt::Dir::kLeft
                            : kdt::Dir::kRight;
 
-      KnnSearchRecursive(cur->GetChild(dir), query_idx);
+      NnSearchRecursive(cur->GetChild(dir), query_idx);
 
       const auto diff = my_query_points_[query_idx].data[axis] - train;
-      if (diff * diff < my_k_sets[query_idx].WorstDist()) {
-        KnnSearchRecursive(cur->GetChild(FlipDir(dir)), query_idx);
+      if (diff * diff < results_[query_idx]) {
+        NnSearchRecursive(cur->GetChild(FlipDir(dir)), query_idx);
       }
     }
   }
@@ -130,8 +127,7 @@ class KnnCpuManager {
   ExecutorStats stats_;
 
   // Keep results here
-  std::vector<T> my_results;
-  std::vector<KnnResultSet<T>> my_k_sets;
+  std::vector<float> results_;
 };
 
 // Basically, a pointer, an int32, a float, an int
@@ -142,11 +138,11 @@ struct CallStackField {
   kdt::Dir dir;
 };
 
-class KnnExecutor {
+class NnExecutor {
   using QueryPointT = Point<4, float>;
 
  public:
-  KnnExecutor()
+  NnExecutor()
       : query_idx_(), q_(), state_(ExecutionState::kFinished), cur_(nullptr) {
     stack_.reserve(16);
   }
@@ -154,9 +150,10 @@ class KnnExecutor {
   void StartQuery(const unsigned query_idx, const QueryPointT q) {
     query_idx_ = query_idx;
     q_ = q;
+
     redwood::StartQuery(0, query_idx);
 
-    cached_worst_dist_ = std::numeric_limits<double>::max();
+    cached_result_ = std::numeric_limits<float>::max();
     stack_.clear();
     cur_ = nullptr;
 
@@ -164,21 +161,9 @@ class KnnExecutor {
   }
 
   void Resume() {
-    // Get the reduction result (for data in the leaf) from the Accelerator
-    float* k_set;
-    redwood::GetReductionResult(0, query_idx_, &k_set);
-    cached_worst_dist_ = k_set[32 - 1];
-
-    // for (int i = 0; i < 32; ++i) {
-    //   std::cout << k_set[i] << std::endl;
-    // }
-
-    // exit(1);
-
-    // Do another reduction, between the 'minimum' distance recorded so far with
-    // the local result just computed
-    // cached_result_dist_ = std::min(cached_result_dist_, local_result);
-
+    float local_result;
+    redwood::GetReductionResult(0, query_idx_, &local_result);
+    cached_result_ = std::min(cached_result_, local_result);
     Execute();
   }
 
@@ -214,13 +199,9 @@ class KnnExecutor {
         const unsigned accessor_idx =
             tree_ref->v_acc_[cur_->node_type.tree.idx_mid];
 
-        redwood::ReduceBranchNode(0, &tree_ref->data_set_[accessor_idx],
-                                  query_idx_);
-
-        // auto kernel_func = MyFunctor();
-        // const float dist = kernel_func(tree_ref->data_set_[accessor_idx],
-        // q_); result_sets[query_idx].AddPoint(p);
-        // cached_result_dist_ = std::min(cached_result_dist_, dist);
+        auto kernel_func = MyFunctor();
+        const float dist = kernel_func(tree_ref->data_set_[accessor_idx], q_);
+        cached_result_ = std::min(cached_result_, dist);
 
         // **********************************
 
@@ -244,7 +225,7 @@ class KnnExecutor {
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
         if (const auto diff = q_.data[axis] - train;
-            diff * diff < cached_worst_dist_) {
+            diff * diff < cached_result_) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -254,24 +235,29 @@ class KnnExecutor {
     state_ = ExecutionState::kFinished;
   }
 
-  // Actually essential data in a executor
+  long tid_;
 
+  // Actually essential data in a executor
   unsigned query_idx_;
   QueryPointT q_;
   std::vector<CallStackField> stack_;
   ExecutionState state_;
   kdt::Node* cur_;
-  float cached_worst_dist_;
+  float cached_result_;
 };
 
+// -------------------------------------------------------------------------------------------------
+// NN here
+// -------------------------------------------------------------------------------------------------
+
 template <typename T>
-class KnnExecutorManager {
+class NnExecutorManager {
   using QueryPointT = Point<4, T>;
 
  public:
-  KnnExecutorManager(std::shared_ptr<kdt::KdTree> tree,
-                     const QueryPointT* my_query_points, const int my_m,
-                     const int num_batches, const int tid = 0)
+  NnExecutorManager(std::shared_ptr<kdt::KdTree> tree,
+                    const QueryPointT* my_query_points, const int my_m,
+                    const int num_batches, const int tid = 0)
       : tid_(tid),
         my_query_points_(my_query_points),
         my_m_(my_m),
@@ -299,8 +285,6 @@ class KnnExecutorManager {
   }
 
   void StartTraversals() {
-    // while (!executors_.empty()) {
-
     while (!executors_.empty()) {
       // This loop will fill the buffer.
       for (auto it = executors_.begin(); it != executors_.end();) {
@@ -315,7 +299,6 @@ class KnnExecutorManager {
         }
         const auto q_idx = tasks_todo_.back();
         tasks_todo_.pop_back();
-        // std::cout << tasks_todo_.size() << std::endl;
 
         it->StartQuery(q_idx, my_query_points_[q_idx]);
         ++it;
@@ -329,28 +312,6 @@ class KnnExecutorManager {
 
       redwood::ExecuteBatchedKernelsAsync(0, executors_.size());
     }
-
-    //}
-
-    // const auto iterations = my_m_ / num_batches_;
-
-    // for (int j = 0; j < iterations; ++j) {
-
-    //   // for (int i = 0; i < num_batches_; ++i) {
-
-    //   //   const auto q_idx = tasks_todo_.back();
-    //   //   tasks_todo_.pop_back();
-
-    //   //   executors_[i].StartQuery(q_idx, const QueryPointT q)
-    //   //   // redwood::StartQuery(tid_, cur_query_index_);
-
-    //   //   // ComputeForceRecursive(tree_->GetRoot());
-    //   // }
-
-    //
-
-    //   redwood::ExecuteBatchedKernelsAsync(tid_);
-    // }
   }
 
   _NODISCARD ExecutorStats GetStats() const { return stats_; }
@@ -367,10 +328,9 @@ class KnnExecutorManager {
   const int my_m_;
   const int num_batches_;
 
-  std::vector<KnnExecutor> executors_;
+  std::vector<NnExecutor> executors_;
 
   ExecutorStats stats_;
-  // Keep results here
 };
 
 }  // namespace dev
