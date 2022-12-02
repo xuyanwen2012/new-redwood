@@ -42,6 +42,8 @@ class NnExecutor {
     Execute();
   }
 
+  void Init(const int tid) { tid_ = tid; }
+
   void Resume() { Execute(); }
 
   _NODISCARD bool Finished() const {
@@ -115,7 +117,7 @@ class NnExecutor {
     state_ = ExecutionState::kFinished;
   }
 
-  // int tid_;
+  int tid_;
 
   // Actually essential data in a executor
   Task task_;

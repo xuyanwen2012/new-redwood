@@ -4,6 +4,7 @@
 
 #include "../../src/Redwood.hpp"
 #include "../PointCloud.hpp"
+#include "../cxxopts.hpp"
 #include "KDTree.hpp"
 #include "Kernel.hpp"
 #include "NnExecutor.hpp"
@@ -18,12 +19,24 @@ float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
   return *std::min_element(dists.begin(), dists.end());
 }
 
-int main() {
-  const auto n = 1 << 20;
-  const auto m = 64 * 1024;
-  const auto leaf_size = 1024;
-  const auto num_batches = 512;  // For SYCL, 512 is better
-  const auto num_threads = 1;
+int main(int argc, char* argv[]) {
+  cxxopts::Options options("Barnes Hut",
+                           "Heterogeneous Computing N-Body Problem");
+  options.add_options()("n,num", "Number of particles",
+                        cxxopts::value<int>()->default_value("1048576"))(
+      "p,thread", "Num Thread", cxxopts::value<int>()->default_value("1"))(
+      "l,leaf", "Leaf node size",
+      cxxopts::value<unsigned>()->default_value("1024"))(
+      "q,query", "Num to Query", cxxopts::value<int>()->default_value("65536"))(
+      "b,num_batch", "Num Batch", cxxopts::value<int>()->default_value("512"));
+
+  const auto result = options.parse(argc, argv);
+  const auto n = result["num"].as<int>();
+  const auto m = result["query"].as<int>();
+  const auto leaf_size = result["leaf"].as<unsigned>();
+  const auto num_threads = result["thread"].as<int>();
+  const auto num_batches = result["num_batch"].as<int>();
+
   std::cout << "Simulation Prameters:\n"
             << "\tn: " << n << '\n'
             << "\tm: " << m << '\n'
