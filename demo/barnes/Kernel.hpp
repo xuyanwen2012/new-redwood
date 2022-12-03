@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cmath>
+
 #include "../PointCloud.hpp"
 
-struct MyFunctor {
-  static auto rsqrtf(const float x) { return 1.0f / sqrtf(x); }
+namespace kernel {
+static auto rsqrtf(const float x) { return 1.0f / sqrtf(x); }
 
+struct GravityFunctor {
   // GPU version
   _REDWOOD_KERNEL Point3F operator()(const Point4F p, const Point3F q) const {
     const auto dx = p.data[0] - q.data[0];
@@ -29,3 +32,19 @@ struct MyFunctor {
     return {dx * with_mass, dy * with_mass, dz * with_mass};
   }
 };
+
+struct GaussianFunctor {
+  // GPU version
+  _REDWOOD_KERNEL Point3F operator()(const Point4F p, const Point3F q) const {
+    constexpr auto h = 0.2f;
+    const auto dx = p.data[0] - q.data[0];
+    const auto dy = p.data[1] - q.data[1];
+    const auto dz = p.data[2] - q.data[2];
+    const auto dist_sqr = dx * dx + dy * dy + dz * dz + 1e-9f;
+    const auto dist = sqrtf(dist_sqr);
+    auto exp = std::exp(-(dist * dist / (2 * h * h)));
+    return {dx * exp, dy * exp, dz * exp};
+  }
+};
+
+}  // namespace kernel
