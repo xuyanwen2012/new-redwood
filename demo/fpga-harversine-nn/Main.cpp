@@ -30,7 +30,12 @@ int main(int argc, char* argv[]) {
 
   constexpr auto tid = 0;
   constexpr auto debug = true;
-  Point2D q{12.0, 123.0};
+
+  // auto q = Point2D{12.0, 123.0};
+
+  Point2D q;
+  q.data[0] = 12.0;
+  q.data[1] = 123.0;
   auto ptr = &q;
 
   std::vector<Point2D> leaf_node(64);
