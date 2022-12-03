@@ -16,10 +16,8 @@
 constexpr auto kArg = 0;
 constexpr auto kPos0X = 1;
 constexpr auto kPos0Y = 2;
-constexpr auto kPos0Z = 3;
-constexpr auto kPos0W = 4;
-constexpr auto kFincnt = 5;
-constexpr auto kResult = 6;
+constexpr auto kFincnt = 3;
+constexpr auto kResult = 4;
 constexpr auto kNEngine = 1;
 volatile uint64_t* duet_baseaddr = nullptr;
 
@@ -31,14 +29,10 @@ int main(int argc, char* argv[]) {
   constexpr auto tid = 0;
   constexpr auto debug = true;
 
-  // auto q = Point2D{12.0, 123.0};
-
   Point2D q;
   q.data[0] = 12.0;
   q.data[1] = 123.0;
   auto ptr = &q;
-
-  // std::vector<Point2D> leaf_node(64);
 
   auto leaf_node = (Point2D*)aligned_alloc(64, sizeof(Point2D) * 64);
   for (int i = 0; i < 64; ++i) {
@@ -46,11 +40,23 @@ int main(int argc, char* argv[]) {
     leaf_node[i].data[1] = my_rand(0.0, 180.0);
   }
 
+  auto cpu_min = std::numeric_limits<double>::max();
+  for (int i = 0; i < 64; ++i) {
+    constexpr auto functor = MyFunctor();
+
+    auto dist = functor(leaf_node[i], q);
+
+    std::cout << "cpu, " << i << ": " << leaf_node[i].data[0] << " - " << dist << std::endl;
+    cpu_min = std::min(cpu_min, dist);
+  }
+  std::cout << cpu_min << std::endl;
+
+
   const long caller_id = tid;
   volatile uint64_t* sri = duet_baseaddr + (caller_id << 4) + 16;
 
   if constexpr (debug) {
-    std::cout << tid << ": started duet. " << ptr->data[0] << std::endl;
+    std::cout << tid << ": started duet. " << ptr->data[0] << ", " << ptr->data[1] << std::endl;
   }
 
   sri[kPos0X] = *reinterpret_cast<const uint64_t*>(&ptr->data[0]);
@@ -60,8 +66,8 @@ int main(int argc, char* argv[]) {
 
   if constexpr (debug) {
     auto ptr = reinterpret_cast<const Point2D*>(node_base_addr);
-    std::cout << tid << ": pushed duet. " << ptr->data[0] << ", "
-              << ptr->data[0] << "\taddress: " << node_base_addr << std::endl;
+    std::cout << tid << ": pushed duet. " << node_base_addr[0].data[0] << ", "
+              << node_base_addr[0].data[1] << "\taddress: " << node_base_addr << std::endl;
   }
 
   sri[kArg] = reinterpret_cast<uint64_t>(node_base_addr);
@@ -81,16 +87,6 @@ int main(int argc, char* argv[]) {
   *addr = tmp;
 
   std::cout << rzt << std::endl;
-
-  auto cpu_min = std::numeric_limits<double>::max();
-  for (int i = 0; i < 64; ++i) {
-    constexpr auto functor = MyFunctor();
-
-    auto dist = functor(node_base_addr[i], q);
-    cpu_min = std::min(cpu_min, dist);
-  }
-
-  std::cout << cpu_min << std::endl;
 
   return EXIT_SUCCESS;
 }
