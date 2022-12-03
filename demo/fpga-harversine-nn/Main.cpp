@@ -38,7 +38,9 @@ int main(int argc, char* argv[]) {
   q.data[1] = 123.0;
   auto ptr = &q;
 
-  std::vector<Point2D> leaf_node(64);
+  // std::vector<Point2D> leaf_node(64);
+
+  auto leaf_node = (Point2D*)aligned_alloc(64, sizeof(Point2D) * 64);
   for (int i = 0; i < 64; ++i) {
     leaf_node[i].data[0] = my_rand(0.0, 90.0);
     leaf_node[i].data[1] = my_rand(0.0, 180.0);
@@ -53,15 +55,13 @@ int main(int argc, char* argv[]) {
 
   sri[kPos0X] = *reinterpret_cast<const uint64_t*>(&ptr->data[0]);
   sri[kPos0Y] = *reinterpret_cast<const uint64_t*>(&ptr->data[1]);
-  sri[kPos0Z] = *reinterpret_cast<const uint64_t*>(&ptr->data[2]);
-  sri[kPos0W] = *reinterpret_cast<const uint64_t*>(&ptr->data[3]);
 
-  auto node_base_addr = leaf_node.data();
+  auto node_base_addr = leaf_node;
 
   if constexpr (debug) {
     auto ptr = reinterpret_cast<const Point2D*>(node_base_addr);
-    std::cout << tid << ": pushed duet. " << ptr->data[0]
-              << "\taddress: " << node_base_addr << std::endl;
+    std::cout << tid << ": pushed duet. " << ptr->data[0] << ", "
+              << ptr->data[0] << "\taddress: " << node_base_addr << std::endl;
   }
 
   sri[kArg] = reinterpret_cast<uint64_t>(node_base_addr);
