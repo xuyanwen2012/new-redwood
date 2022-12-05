@@ -29,10 +29,11 @@ struct MyFunctor {
 
   // GPU version
   _REDWOOD_KERNEL double operator()(const Point2D p, const Point2D q) const {
-    auto lat1 = p.data[0];
     auto lat2 = q.data[0];
-    const auto lon1 = p.data[1];
     const auto lon2 = q.data[1];
+
+    auto lat1 = p.data[0];
+    const auto lon1 = p.data[1];
 
     const auto dLat = (lat2 - lat1) * M_PI / 180.0;
     const auto dLon = (lon2 - lon1) * M_PI / 180.0;
