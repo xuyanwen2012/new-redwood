@@ -9,7 +9,7 @@
 namespace redwood {
 struct Task {
   int query_idx;
-  Point4F query_point;
+  Point2F query_point;
 };
 
 namespace dev {
@@ -100,12 +100,15 @@ class ExecutorManager {
     }
   }
 
+  //   _NODISCARD ExecutorStats GetStats() const { return stats_; }
+
  private:
   int tid_;
   std::vector<Task>& my_tasks_;
   std::vector<ExecutorT> executors_;
 
   const int num_batches_;
+  //   ExecutorStats stats_;
 };
 }  // namespace dev
 }  // namespace redwood

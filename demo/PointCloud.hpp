@@ -98,6 +98,8 @@ std::ostream& operator<<(std::ostream& os, const Point<Dim, T>& dt) {
   return os;
 }
 
+using Point2F = Point<2, float>;
+using Point2D = Point<2, double>;
 using Point3F = Point<3, float>;
 using Point4F = Point<4, float>;
 using Point4D = Point<4, double>;

@@ -1,16 +1,14 @@
 #pragma once
 
 #include <algorithm>
-#include <cassert>
 #include <limits>
 #include <memory>
 #include <vector>
 
 #include "../../src/Redwood.hpp"
-#include "../nn/ExecutorManager.hpp"
-#include "../nn/KDTree.hpp"
-#include "../nn/Kernel.hpp"
-#include "KnnSet.hpp"
+#include "ExecutorManager.hpp"
+#include "KDTree.hpp"
+#include "Kernel.hpp"
 
 namespace redwood {
 
@@ -30,21 +28,21 @@ struct CallStackField {
   kdt::Dir dir;
 };
 
-class KnnExecutor {
+class NnExecutor {
  public:
-  KnnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
+  NnExecutor() : task_(), state_(ExecutionState::kFinished), cur_(nullptr) {
     stack_.reserve(16);
   }
-
-  void Init(const int tid) { tid_ = tid; }
 
   void StartQuery(const Task& task) {
     task_ = task;
     stack_.clear();
     cur_ = nullptr;
-    GetReductionResult(tid_, task.query_idx, &cached_result_set_);
+    GetReductionResult(0, task.query_idx, &cached_result_addr_);
     Execute();
   }
+
+  void Init(const int tid) { tid_ = tid; }
 
   void Resume() { Execute(); }
 
@@ -54,7 +52,7 @@ class KnnExecutor {
 
  private:
   void Execute() {
-    constexpr auto kernel_func = kernel::MyFunctor();
+    constexpr auto kernel_func = MyFunctor();
 
     if (state_ == ExecutionState::kWorking) goto my_resume_point;
 
@@ -66,7 +64,7 @@ class KnnExecutor {
       // Traverse all the way to left most leaf node
       while (cur_ != nullptr) {
         if (cur_->IsLeaf()) {
-          ReduceLeafNodeWithTask(tid_, cur_->uid, &task_);
+          ReduceLeafNodeWithTask(0, cur_->uid, &task_);
 
           // **** Coroutine Reuturn ****
           return;
@@ -85,7 +83,7 @@ class KnnExecutor {
         const float dist =
             kernel_func(tree_ref->data_set_[accessor_idx], task_.query_point);
 
-        cached_result_set_->Insert(dist);
+        *cached_result_addr_ = std::min(*cached_result_addr_, dist);
 
         // **********************************
 
@@ -109,12 +107,18 @@ class KnnExecutor {
         // If the difference between the query point and the other splitting
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
-        Point4F a{};
-        Point4F b{};
-        a.data[axis] = task_.query_point.data[axis];
-        b.data[axis] = train;
-        const auto diff = kernel_func(a, b);
-        if (diff < cached_result_set_->WorstDist()) {
+        float diff;
+        if (axis == 0) {
+          // lat
+          diff = kernel_func(Point2F{task_.query_point.data[axis], 0.0f},
+                             Point2F{train, 0.0f});
+        } else {
+          // long
+          diff = kernel_func(Point2F{0.0f, task_.query_point.data[axis]},
+                             Point2F{0.0f, train});
+        }
+
+        if (diff < *cached_result_addr_) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -132,13 +136,8 @@ class KnnExecutor {
   ExecutionState state_;
   kdt::Node* cur_;
 
-  KnnSet<float, 32>*
-      cached_result_set_;  // a pointer to the KNN set of 32 float (idx * 32)
+  float* cached_result_addr_;  // a pointer to the USM of 1 float
 };
-
-// -------------------------------------------------------------------------------------------------
-// KNN here
-// -------------------------------------------------------------------------------------------------
 
 #endif
 
@@ -160,14 +159,9 @@ class SequentialManager {
       tree_ref = tree;
     }
 
-    cpu_results_ =
-        static_cast<float*>(malloc(sizeof(float) * 32 * my_tasks_.size()));
-    std::fill_n(cpu_results_, 32 * my_tasks_.size(),
-                std::numeric_limits<float>::max());
-
-    for (int i = 0; i < 4; ++i) {
-      std::cout << my_tasks_[i].query_point << std::endl;
-    }
+    result_.resize(my_tasks_.size());
+    std::fill(result_.begin(), result_.end(),
+              std::numeric_limits<float>::max());
 
     std::cout << "Sequential Manager "
               << ":\n"
@@ -180,17 +174,15 @@ class SequentialManager {
       const auto task = my_tasks_.back();
       my_tasks_.pop_back();
 
-      KnnSearchRecursive(tree_ref->GetRoot(), task);
+      NnSearchRecursive(tree_ref->GetRoot(), task);
     }
   }
 
-  float* GetCpuResult(const int query_idx) const {
-    return cpu_sets_[query_idx].rank;
-  }
+  float GetCpuResult(const int query_idx) const { return result_[query_idx]; }
 
  protected:
-  void KnnSearchRecursive(const kdt::Node* cur, const Task task) {
-    constexpr auto kernel_func = kernel::MyFunctor();
+  void NnSearchRecursive(const kdt::Node* cur, const Task task) {
+    static auto kernel_func = MyFunctor();
 
     if (cur->IsLeaf()) {
       // ++stats_.leaf_node_reduced;
@@ -202,7 +194,8 @@ class SequentialManager {
             tree_ref->GetNodeContentTable()[cur->uid * leaf_size + i];
         const auto dist = kernel_func(p, task.query_point);
 
-        cpu_sets_[task.query_idx].Insert(dist);
+        // cpu_sets_[task.query_idx].Insert(dist);
+        result_[task.query_idx] = std::min(result_[task.query_idx], dist);
       }
       // **********************************
     } else {
@@ -214,7 +207,8 @@ class SequentialManager {
       // **** Reduction at branch node ****
       const auto dist = kernel_func(
           tree_ref->GetNodeContentTable()[accessor_idx], task.query_point);
-      cpu_sets_[task.query_idx].Insert(dist);
+      // cpu_sets_[task.query_idx].Insert(dist);
+      result_[task.query_idx] = std::min(result_[task.query_idx], dist);
 
       // **********************************
 
@@ -223,15 +217,24 @@ class SequentialManager {
       const auto dir = task.query_point.data[axis] < train ? kdt::Dir::kLeft
                                                            : kdt::Dir::kRight;
 
-      KnnSearchRecursive(cur->GetChild(dir), task);
+      NnSearchRecursive(cur->GetChild(dir), task);
 
-      Point4F a{};
-      Point4F b{};
-      a.data[axis] = task.query_point.data[axis];
-      b.data[axis] = train;
-      const auto diff = kernel_func(a, b);
-      if (diff < cpu_sets_[task.query_idx].WorstDist()) {
-        KnnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
+      float diff;
+      if (axis == 0) {
+        // lat
+        diff = kernel_func(Point2F{task.query_point.data[axis], 0.0f},
+                           Point2F{train, 0.0f});
+      } else {
+        // long
+        diff = kernel_func(Point2F{0.0f, task.query_point.data[axis]},
+                           Point2F{0.0f, train});
+      }
+
+      // std::cout << diff << " < " << result_[task.query_idx] << "?" <<
+      // std::endl;
+
+      if (diff < result_[task.query_idx]) {
+        NnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
       }
     }
   }
@@ -239,10 +242,7 @@ class SequentialManager {
  private:
   std::vector<Task>& my_tasks_;
 
-  union {
-    KnnSet<float, 32>* cpu_sets_;
-    float* cpu_results_;
-  };
+  std::vector<float> result_;
 };
 }  // namespace dev
 }  // namespace redwood

@@ -12,8 +12,8 @@ struct NnResult;
 
 // ------------------- Application Types -------------------
 
-using DataT = Point4F;
-using QueryT = Point4F;
+using DataT = Point2F;
+using QueryT = Point2F;
 using ResultT = float;  // Special for KNN
 
 // ------------------- Constants -------------------
@@ -93,7 +93,7 @@ struct NnBuffer {
 
 void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
                      const int num_batch_to_process) {
-  constexpr auto kernel_func = kernel::MyFunctor();
+  constexpr auto kernel_func = MyFunctor();
 
   const auto task_ptr = buffer.tasks.data();
   const auto leaf_idx_ptr = buffer.leaf_idx.data();
@@ -124,7 +124,7 @@ void ProcessNnBuffer(sycl::queue& q, const NnBuffer& buffer,
 
 void ProcessNnBufferCpu(const NnBuffer& buffer,
                         const int num_batch_to_process) {
-  constexpr auto kernel_func = kernel::MyFunctor();
+  constexpr auto kernel_func = MyFunctor();
 
   auto result_ptr = nn_results[cur_collecting].results_usm.data();
 

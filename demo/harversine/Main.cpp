@@ -9,8 +9,8 @@
 #include "Kernel.hpp"
 #include "NnExecutor.hpp"
 
-float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
-  constexpr auto kernel_func = kernel::MyFunctor();
+float CpuNaiveQuery(const Point2F* in_data, const Point2F q, const unsigned n) {
+  constexpr auto kernel_func = MyFunctor();
 
   std::vector<float> dists(n);
   std::transform(in_data, in_data + n, dists.begin(),
@@ -20,8 +20,8 @@ float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
 }
 
 int main(int argc, char* argv[]) {
-  cxxopts::Options options("Nearest Neighbor",
-                           "Heterogeneous Computing NN Problem");
+  cxxopts::Options options("Barnes Hut",
+                           "Heterogeneous Computing N-Body Problem");
   options.add_options()("n,num", "Number of particles",
                         cxxopts::value<int>()->default_value("1048576"))(
       "p,thread", "Num Thread", cxxopts::value<int>()->default_value("1"))(
@@ -45,18 +45,22 @@ int main(int argc, char* argv[]) {
             << "\tnum_batches: " << num_batches << '\n'
             << std::endl;
 
-  assert(m % num_threads == 0);
+  // assert(m % num_threads == 0);
+
+  static const auto make_random_location = [] {
+    return Point2F{my_rand<float>(0.0f, 90.0f), my_rand<float>(0.0f, 180.0f)};
+  };
 
   std::cout << "Preparing dataset... " << '\n';
-  std::vector<Point4F> h_in_data(n);
-  std::generate(h_in_data.begin(), h_in_data.end(), MakeRandomPoint<4, float>);
+  std::vector<Point2F> h_in_data(n);
+  std::generate(h_in_data.begin(), h_in_data.end(), make_random_location);
 
   const auto tid = 0;
   const auto num_task_per_thread = m / 1;
 
   std::vector<redwood::Task> tasks_to_do(num_task_per_thread);
   for (int i = 0; i < num_task_per_thread; ++i) {
-    tasks_to_do[i].query_point = MakeRandomPoint<4, float>();
+    tasks_to_do[i].query_point = make_random_location();
     tasks_to_do[i].query_idx = i;
   }
   const std::vector for_display(tasks_to_do.begin(), tasks_to_do.begin() + 5);
@@ -106,6 +110,13 @@ int main(int argc, char* argv[]) {
       std::cout << "Query " << i << ":\n"
                 << "\tQuery point " << for_display[i].query_point << '\n'
                 << "\tResult " << result << '\n';
+
+      if constexpr (constexpr auto show_ground_truth = true) {
+        std::cout << "\tground_truth: \t"
+                  << CpuNaiveQuery(h_in_data.data(), for_display[i].query_point,
+                                   n)
+                  << '\n';
+      }
     }
 
     return EXIT_SUCCESS;

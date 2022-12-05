@@ -48,7 +48,7 @@ void StartQuery(long tid, const void* task_obj) {
 }
 
 void ReduceLeafNode(const long tid, const unsigned node_idx, const unsigned _) {
-  constexpr auto functor = MyFunctor();
+  constexpr auto functor = kernel::MyFunctor();
 
   const auto q = current_task->query_point;
   const auto leaf_size = host_leaf_sizes_ref[node_idx];
@@ -63,7 +63,7 @@ void ReduceLeafNode(const long tid, const unsigned node_idx, const unsigned _) {
 
 void ReduceBranchNode(const long tid, const void* node_element,
                       unsigned query_idx) {
-  constexpr auto functor = MyFunctor();
+  constexpr auto functor = kernel::MyFunctor();
   auto com = static_cast<const DataT*>(node_element);
 
   final_results[query_idx] += functor(*com, current_task->query_point);

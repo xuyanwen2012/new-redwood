@@ -22,7 +22,7 @@ constexpr auto kBlockThreads = 256;
 constexpr auto kNumStreams = 2;  // Assume 2
 constexpr auto kK = 32;          // Assume
 
-constexpr auto kDebugPrint = false;
+constexpr auto kDebugPrint = true;
 
 int stored_leaf_size;
 int stored_num_threads;
@@ -34,10 +34,20 @@ sycl::context ctx;
 
 // ------------------- Thread local -------------------
 
-sycl::queue qs[kNumStreams];
-std::vector<NnBuffer> nn_buffers;
-std::vector<KnnResult> knn_results;
-int cur_collecting;
+struct ReducerHandler {
+  sycl::queue qs[kNumStreams];
+  std::vector<NnBuffer> nn_buffers;
+  std::vector<KnnResult> knn_results;
+  int cur_collecting = 0;
+
+  std::vector<ResultT> temp_sorter;  // stored_leaf_size + kK
+
+  _NODISCARD NnBuffer& CurrentBuffer() { return nn_buffers[cur_collecting]; }
+  _NODISCARD sycl::queue& CurrentQueue() { return qs[cur_collecting]; }
+  _NODISCARD KnnResult& CurrentResults() { return knn_results[cur_collecting]; }
+};
+
+std::vector<ReducerHandler> rhs;
 
 // ------------------- Global Shared  -------------------
 
@@ -93,13 +103,13 @@ struct NnBuffer {
   redwood::UsmVector<int> leaf_idx;         // num_batch
 };
 
-void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer,
+void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer, KnnResult& result,
                       const int num_batch_to_process) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
 
   const auto task_ptr = buffer.tasks.data();
   const auto leaf_idx_ptr = buffer.leaf_idx.data();
-  const auto result_ptr = knn_results[cur_collecting].results_usm.data();
+  const auto result_ptr = result.results_usm.data();
 
   const auto local_leaf_size = stored_leaf_size;
   q.submit([&](sycl::handler& h) {
@@ -153,12 +163,13 @@ void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer,
   });
 }
 
-void ProcessKnnBufferCpu(const NnBuffer& buffer,
+void ProcessKnnBufferCpu(const NnBuffer& buffer, KnnResult& result,
+                         std::vector<float>& temp_sorter,
                          const int num_batch_to_process) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
 
-  auto result_ptr = knn_results[cur_collecting].results_usm.data();
-  static std::vector<ResultT> temp_sorter(stored_leaf_size + kK);
+  auto result_ptr = result.results_usm.data();
+  // static std::vector<ResultT> temp_sorter(stored_leaf_size + kK);
 
   for (int batch_id = 0; batch_id < num_batch_to_process; ++batch_id) {
     const auto leaf_id = buffer.leaf_idx[batch_id];
@@ -195,18 +206,34 @@ void InitReducer(const unsigned num_threads, const unsigned leaf_size,
     exit(1);
   }
 
-  qs[0] = sycl::queue(device);
-  for (int i = 1; i < kNumStreams; i++)
-    qs[i] = sycl::queue(qs[0].get_context(), device);
+  ReducerHandler rh;
+  rh.cur_collecting = 0;
 
-  ShowDevice(qs[0]);
+  rh.qs[0] = sycl::queue(device);
+  const auto ctx = rh.qs[0].get_context();
 
-  for (auto& q : qs) {
-    nn_buffers.emplace_back(q, stored_num_batches);
+  for (int i = 1; i < kNumStreams; i++) rh.qs[i] = sycl::queue(ctx, device);
+  for (auto& q : rh.qs) {
+    rh.nn_buffers.emplace_back(q, stored_num_batches);
+  }
+  rh.temp_sorter.resize(stored_leaf_size + kK);
+  rhs.push_back(rh);
+
+  for (int i = 1; i < stored_num_threads; ++i) {
+    ReducerHandler rh;
+    rh.cur_collecting = 0;
+
+    for (int i = 0; i < kNumStreams; i++) rh.qs[i] = sycl::queue(ctx, device);
+
+    for (auto& q : rh.qs) {
+      rh.nn_buffers.emplace_back(q, stored_num_batches);
+    }
+    rh.temp_sorter.resize(stored_leaf_size + kK);
+    rhs.push_back(rh);
   }
 
-  WarmUp(qs[0]);
-  cur_collecting = 0;
+  ShowDevice(rhs[0].qs[0]);
+  WarmUp(rhs[0].qs[0]);
 }
 
 void ReduceLeafNode(const long tid, const unsigned node_idx,
@@ -215,16 +242,19 @@ void ReduceLeafNode(const long tid, const unsigned node_idx,
 void GetReductionResult(const long tid, const unsigned query_idx,
                         void* result) {
   auto addr = static_cast<ResultT**>(result);
-  *addr = &knn_results[cur_collecting].results_usm[query_idx * kK];
+  // *addr = &knn_results[cur_collecting].results_usm[query_idx * kK];
+  *addr = &rhs[tid].CurrentResults().results_usm[query_idx * kK];
 }
 
 void SetQueryPoints(const long tid, const void* query_points,
                     const unsigned num_query) {
+  std::cout << "SetQueryPoints " << tid << std::endl;
+
   const auto total_count = num_query * kK;
 
-  knn_results.reserve(kNumStreams);
-  knn_results.emplace_back(qs[0], num_query);
-  knn_results.emplace_back(qs[1], num_query);
+  rhs[tid].knn_results.reserve(kNumStreams);
+  rhs[tid].knn_results.emplace_back(rhs[tid].qs[0], num_query);
+  rhs[tid].knn_results.emplace_back(rhs[tid].qs[1], num_query);
 }
 
 void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
@@ -234,25 +264,41 @@ void SetNodeTables(const void* leaf_node_table, const unsigned num_leaf_nodes) {
 }
 
 void ExecuteBatchedKernelsAsync(long tid, const int num_batch_collected) {
+  // exit(1);
   constexpr auto threshold = 64;
+  // ProcessKnnBufferCpu(rhs[tid].CurrentBuffer(), rhs[tid].CurrentResults(),
+  //                     rhs[tid].temp_sorter, num_batch_collected);
+
   if (num_batch_collected < threshold) {
-    ProcessKnnBufferCpu(nn_buffers[cur_collecting], num_batch_collected);
+    ProcessKnnBufferCpu(rhs[tid].CurrentBuffer(), rhs[tid].CurrentResults(),
+                        rhs[tid].temp_sorter, num_batch_collected);
   } else {
-    ProcessKnnBuffer(qs[cur_collecting], nn_buffers[cur_collecting],
-                     num_batch_collected);
+    if (tid == 0) {
+      ProcessKnnBuffer(rhs[tid].CurrentQueue(), rhs[tid].CurrentBuffer(),
+                       rhs[tid].CurrentResults(), num_batch_collected);
+    } else {
+      ProcessKnnBufferCpu(rhs[tid].CurrentBuffer(), rhs[tid].CurrentResults(),
+                          rhs[tid].temp_sorter, num_batch_collected);
+    }
   }
 
-  const auto next = 1 - cur_collecting;
-  qs[next].wait();
+  // if constexpr (kDebugPrint) {
+  //   std::cout << '[' << tid << ']' << ": cur, " << rhs[tid].cur_collecting
+  //             << std::endl;
+  // }
 
-  nn_buffers[next].Clear();
-  cur_collecting = next;
+  const auto next = 1 - rhs[tid].cur_collecting;
+  rhs[tid].qs[next].wait();
+
+  rhs[tid].nn_buffers[next].Clear();
+  rhs[tid].cur_collecting = next;
 }
 
 void ReduceLeafNodeWithTask(long tid, const unsigned node_idx,
                             const void* task) {
   const auto t = static_cast<const Task*>(task);
-  nn_buffers[cur_collecting].PushNewTask(*t, node_idx);
+  // nn_buffers[cur_collecting].PushNewTask(*t, node_idx);
+  rhs[tid].CurrentBuffer().PushNewTask(*t, node_idx);
 }
 
 void EndReducer() {}
