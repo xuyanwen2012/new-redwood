@@ -52,6 +52,7 @@ class NnExecutor {
 
  private:
   void Execute() {
+    constexpr auto kernel_func = kernel::MyFunctor();
     if (state_ == ExecutionState::kWorking) goto my_resume_point;
 
     state_ = ExecutionState::kWorking;
@@ -78,7 +79,6 @@ class NnExecutor {
         const unsigned accessor_idx =
             tree_ref->v_acc_[cur_->node_type.tree.idx_mid];
 
-        auto kernel_func = MyFunctor();
         const float dist =
             kernel_func(tree_ref->data_set_[accessor_idx], task_.query_point);
 
@@ -106,8 +106,13 @@ class NnExecutor {
         // If the difference between the query point and the other splitting
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
-        if (const auto diff = task_.query_point.data[axis] - train;
-            diff * diff < *cached_result_addr_) {
+
+        Point4F a{};
+        Point4F b{};
+        a.data[axis] = task_.query_point.data[axis];
+        b.data[axis] = train;
+        const auto diff = kernel_func(a, b);
+        if (diff < *cached_result_addr_) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -171,7 +176,7 @@ class SequentialManager {
 
  protected:
   void NnSearchRecursive(const kdt::Node* cur, const Task task) {
-    static auto kernel_func = MyFunctor();
+    static auto kernel_func = kernel::MyFunctor();
 
     if (cur->IsLeaf()) {
       // ++stats_.leaf_node_reduced;
@@ -208,8 +213,14 @@ class SequentialManager {
 
       NnSearchRecursive(cur->GetChild(dir), task);
 
-      if (const auto diff = task.query_point.data[axis] - train;
-          diff * diff < result_[task.query_idx]) {
+      Point4F a{};
+      Point4F b{};
+      a.data[axis] = task.query_point.data[axis];
+      b.data[axis] = train;
+      const auto diff = kernel_func(a, b);
+      if (diff < result_[task.query_idx]) {
+        // if (const auto diff = task.query_point.data[axis] - train;
+        //     diff * diff < result_[task.query_idx]) {
         NnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
       }
     }

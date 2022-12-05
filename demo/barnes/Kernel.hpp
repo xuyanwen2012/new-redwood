@@ -7,7 +7,7 @@
 namespace kernel {
 static auto rsqrtf(const float x) { return 1.0f / sqrtf(x); }
 
-constexpr auto kKdeConstant = 0.2f; 
+constexpr auto kKdeConstant = 0.2f;
 
 // "4F -> 3F -> 3F" functors
 struct GravityFunctor;

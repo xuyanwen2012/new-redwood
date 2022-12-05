@@ -10,7 +10,7 @@
 #include "NnExecutor.hpp"
 
 float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
 
   std::vector<float> dists(n);
   std::transform(in_data, in_data + n, dists.begin(),
