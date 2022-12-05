@@ -20,8 +20,8 @@ float CpuNaiveQuery(const Point4F* in_data, const Point4F q, const unsigned n) {
 }
 
 int main(int argc, char* argv[]) {
-  cxxopts::Options options("Barnes Hut",
-                           "Heterogeneous Computing N-Body Problem");
+  cxxopts::Options options("Nearest Neighbor",
+                           "Heterogeneous Computing NN Problem");
   options.add_options()("n,num", "Number of particles",
                         cxxopts::value<int>()->default_value("1048576"))(
       "p,thread", "Num Thread", cxxopts::value<int>()->default_value("1"))(

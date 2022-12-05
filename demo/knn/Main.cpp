@@ -6,6 +6,7 @@
 #include "../../src/Redwood.hpp"
 #include "../PointCloud.hpp"
 #include "../ThreadHelper.hpp"
+#include "../cxxopts.hpp"
 #include "../nn/KDTree.hpp"
 #include "../nn/Kernel.hpp"
 #include "KnnExecutor.hpp"
@@ -21,13 +22,24 @@ std::vector<float> CpuNaiveQuery(const Point4F* in_data, const Point4F q,
   return std::vector(dists.begin(), dists.begin() + k);
 }
 
-int main() {
-  const auto n = 1 << 20;
-  const auto m = 16 * 1024;
+int main(int argc, char* argv[]) {
+  cxxopts::Options options("KNN", "Heterogeneous Computing KNN Problem");
+  options.add_options()("n,num", "Number of particles",
+                        cxxopts::value<int>()->default_value("1048576"))(
+      "p,thread", "Num Thread", cxxopts::value<int>()->default_value("1"))(
+      "l,leaf", "Leaf node size",
+      cxxopts::value<unsigned>()->default_value("1024"))(
+      "q,query", "Num to Query", cxxopts::value<int>()->default_value("16384"))(
+      "b,num_batch", "Num Batch", cxxopts::value<int>()->default_value("512"));
+
+  const auto result = options.parse(argc, argv);
+  const auto n = result["num"].as<int>();
+  const auto m = result["query"].as<int>();
   constexpr auto k = 32;
-  const auto leaf_size = 128;
-  const auto num_batches = 1024;  // For SYCL, 512 is better
-  const auto num_threads = 1;
+  const auto leaf_size = result["leaf"].as<unsigned>();
+  const auto num_threads = result["thread"].as<int>();
+  const auto num_batches = result["num_batch"].as<int>();
+
   std::cout << "Simulation Prameters:\n"
             << "\tn: " << n << '\n'
             << "\tm: " << m << '\n'
@@ -59,10 +71,10 @@ int main() {
     redwood::SetNodeTables(h_lnd, num_leaf_nodes);
 
     std::vector<std::vector<redwood::Task>> tasks_to_do(num_threads);
+    const auto num_task_per_thread = m / num_threads;
 
     for (int tid = 0; tid < num_threads; ++tid) {
       // Generate sub tasks for each thread
-      const auto num_task_per_thread = m / num_threads;
       tasks_to_do[tid].resize(num_task_per_thread);
       for (int i = 0; i < num_task_per_thread; ++i) {
         tasks_to_do[tid][i].query_point = MakeRandomPoint<4, float>();
