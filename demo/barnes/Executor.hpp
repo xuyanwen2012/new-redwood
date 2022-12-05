@@ -87,7 +87,7 @@ class BarnesExecutorManager {
 
   void ComputeForceRecursive(const oct::Node<float>* cur,
                              const Task<Point3F>& task) {
-    constexpr auto functor = MyFunctor();
+    constexpr auto functor = kernel::MyFunctor();
     if (cur->IsLeaf()) {
       if (cur->bodies.empty()) return;
 

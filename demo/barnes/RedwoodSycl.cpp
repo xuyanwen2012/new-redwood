@@ -111,7 +111,7 @@ struct BhPack {
 
 // Naive
 void StartProcessBhLeafPack(sycl::queue& q, BhPack& pack) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
   const auto data_size = pack.NumLeafsCollected();
 
   if (data_size == 0) {
@@ -191,7 +191,7 @@ void FinishProcessBhLeafPack(const BhPack& pack) {
 }
 
 void StartProcessBhBranchPack(sycl::queue& q, BhPack& pack) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
   const auto data_size = pack.NumBranchCollected();
 
   if (data_size == 0) {
@@ -300,7 +300,7 @@ void ReduceBranchNode(const long tid, const void* node_element,
     bh_buffers[cur_collecting].PushBranch(*com);
 
   } else {
-    constexpr auto functor = MyFunctor();
+    constexpr auto functor = kernel::MyFunctor();
     const auto q = bh_buffers[cur_collecting].my_task.query_point;
     final_results[query_idx] += functor(*com, q);
   }
