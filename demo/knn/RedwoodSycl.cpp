@@ -105,7 +105,7 @@ struct NnBuffer {
 
 void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer, KnnResult& result,
                       const int num_batch_to_process) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
 
   const auto task_ptr = buffer.tasks.data();
   const auto leaf_idx_ptr = buffer.leaf_idx.data();
@@ -166,7 +166,7 @@ void ProcessKnnBuffer(sycl::queue& q, const NnBuffer& buffer, KnnResult& result,
 void ProcessKnnBufferCpu(const NnBuffer& buffer, KnnResult& result,
                          std::vector<float>& temp_sorter,
                          const int num_batch_to_process) {
-  constexpr auto kernel_func = MyFunctor();
+  constexpr auto kernel_func = kernel::MyFunctor();
 
   auto result_ptr = result.results_usm.data();
   // static std::vector<ResultT> temp_sorter(stored_leaf_size + kK);

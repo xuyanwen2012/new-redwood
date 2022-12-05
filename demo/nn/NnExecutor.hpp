@@ -219,8 +219,6 @@ class SequentialManager {
       b.data[axis] = train;
       const auto diff = kernel_func(a, b);
       if (diff < result_[task.query_idx]) {
-        // if (const auto diff = task.query_point.data[axis] - train;
-        //     diff * diff < result_[task.query_idx]) {
         NnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
       }
     }

@@ -54,6 +54,8 @@ class KnnExecutor {
 
  private:
   void Execute() {
+    constexpr auto kernel_func = kernel::MyFunctor();
+
     if (state_ == ExecutionState::kWorking) goto my_resume_point;
 
     state_ = ExecutionState::kWorking;
@@ -80,7 +82,6 @@ class KnnExecutor {
         const unsigned accessor_idx =
             tree_ref->v_acc_[cur_->node_type.tree.idx_mid];
 
-        auto kernel_func = MyFunctor();
         const float dist =
             kernel_func(tree_ref->data_set_[accessor_idx], task_.query_point);
 
@@ -108,8 +109,12 @@ class KnnExecutor {
         // If the difference between the query point and the other splitting
         // plane is greater than the current found minimum distance, then it is
         // impossible to have a NN there.
-        if (const auto diff = task_.query_point.data[axis] - train;
-            diff * diff < cached_result_set_->WorstDist()) {
+        Point4F a{};
+        Point4F b{};
+        a.data[axis] = task_.query_point.data[axis];
+        b.data[axis] = train;
+        const auto diff = kernel_func(a, b);
+        if (diff < cached_result_set_->WorstDist()) {
           cur_ = last_cur->GetChild(FlipDir(dir));
         }
       }
@@ -185,7 +190,7 @@ class SequentialManager {
 
  protected:
   void KnnSearchRecursive(const kdt::Node* cur, const Task task) {
-    static auto kernel_func = MyFunctor();
+    constexpr auto kernel_func = kernel::MyFunctor();
 
     if (cur->IsLeaf()) {
       // ++stats_.leaf_node_reduced;
@@ -220,8 +225,12 @@ class SequentialManager {
 
       KnnSearchRecursive(cur->GetChild(dir), task);
 
-      if (const auto diff = task.query_point.data[axis] - train;
-          diff * diff < cpu_sets_[task.query_idx].WorstDist()) {
+      Point4F a{};
+      Point4F b{};
+      a.data[axis] = task.query_point.data[axis];
+      b.data[axis] = train;
+      const auto diff = kernel_func(a, b);
+      if (diff < cpu_sets_[task.query_idx].WorstDist()) {
         KnnSearchRecursive(cur->GetChild(FlipDir(dir)), task);
       }
     }
