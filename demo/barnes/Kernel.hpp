@@ -14,7 +14,7 @@ struct GravityFunctor;
 struct GaussianFunctor;
 struct TopHatFunctor;
 
-using MyFunctor = GravityFunctor;
+using MyFunctor = TopHatFunctor;
 
 struct GravityFunctor {
   // GPU version

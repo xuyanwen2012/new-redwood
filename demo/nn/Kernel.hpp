@@ -10,7 +10,7 @@ struct EuclideanFunctor;
 struct ManhattanFunctor;
 struct ChebyshevFunctor;
 
-using MyFunctor = EuclideanFunctor;
+using MyFunctor = ChebyshevFunctor;
 
 struct EuclideanFunctor {
   // GPU version
